@@ -59,7 +59,11 @@ func shellExecuteError(ret uintptr, callErr error) error {
 	if ret > 32 {
 		return nil
 	}
-	if callErr == syscall.Errno(1223) {
+	// ShellExecuteW 通过返回值（而非 errno）报告失败：用户取消 UAC 提权时
+	// 返回 SE_ERR_ACCESSDENIED(5)。原实现误判 callErr == ERROR_CANCELLED(1223)，
+	// 该 errno 不会出现在 ShellExecuteW 的调用中，导致取消提示退化为泛化的
+	// "启动提权进程失败"，掩盖了用户主动取消这一常见情况。
+	if ret == 5 || callErr == syscall.Errno(1223) {
 		return fmt.Errorf("你已取消 UAC 权限请求")
 	}
 	return fmt.Errorf("启动提权进程失败 (code=%d): %v", ret, callErr)

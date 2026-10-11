@@ -770,10 +770,12 @@ el("btnCompact").addEventListener("click",function(){
 /* ---------------- 清理日志 ---------------- */
 el("btnLogOpen").addEventListener("click",function(){ openFolder(logDir()).catch(function(){}); });
 el("btnLogRefresh").addEventListener("click",refreshLog);
-function logDir(){ return "%LOCALAPPDATA%\\WinDriveCleaner"; }
+var logDirPath = "%LOCALAPPDATA%\\WinDriveCleaner";
+function logDir(){ return logDirPath; }
 function refreshLog(){
   runTask("readLog", function(){ return api.apiReadLog(); })
     .then(function(r){
+      if(r.dir) logDirPath = r.dir;   /* 以后端返回的真实目录为准，避免依赖环境变量展开 */
       el("logPath").textContent = r.file ? (r.file + " · " + r.count + " 行") : "";
       el("logView").textContent = r.content || "（尚无清理日志）";
     })

@@ -256,6 +256,13 @@ func TestElevationErrorsAndArguments(t *testing.T) {
 	if shellExecuteError(33, nil) != nil {
 		t.Fatal("successful ShellExecute rejected")
 	}
+	// 用户取消 UAC 时 ShellExecuteW 返回 SE_ERR_ACCESSDENIED(5)，必须报告为取消，
+	// 而非泛化的"启动失败"，否则用户会误以为程序出错而非自己点了取消。
+	for _, cancelled := range []uintptr{5} {
+		if err := shellExecuteError(cancelled, nil); err == nil || !strings.Contains(err.Error(), "取消") {
+			t.Fatalf("UAC cancellation (ret=%d) not reported as cancellation: %v", cancelled, err)
+		}
+	}
 	args := elevationArgs([]string{"--gui", "--dry-run", "--no-uac=true", "--no-pause"}, []string{"--deep"})
 	if strings.Join(args, " ") != "--no-pause --deep --elevated" {
 		t.Fatalf("elevated task did not reflect interactive selection: %v", args)
