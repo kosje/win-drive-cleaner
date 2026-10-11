@@ -94,7 +94,10 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           $version = $env:RELEASE_TAG
-          gh release create $version dist/release/WinDriveCleaner-x64.exe dist/release/WinDriveCleaner-x86.exe "dist/release/WinDriveCleaner-$version.zip" dist/release/SHA256SUMS --verify-tag --draft --title "$version — 安全缓存清理与可取消扫描" --notes-file "release/$version/NOTES.md"
+          $summary = (Get-Content -LiteralPath "release/$version/NOTES.md" -TotalCount 3 | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)
+          if (-not $summary) { $summary = $version }
+          $summary = $summary.Trim().TrimEnd('。', '，', '；', '.', ',', ';', '！', '!', '？', '?', '、')
+          gh release create $version dist/release/WinDriveCleaner-x64.exe dist/release/WinDriveCleaner-x86.exe "dist/release/WinDriveCleaner-$version.zip" dist/release/SHA256SUMS --verify-tag --draft --title "$version — $summary" --notes-file "release/$version/NOTES.md"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $release = gh release view $version --json assets | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $release.assets.Count -ne 4) { throw 'Release attachment count mismatch' }
