@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -257,7 +258,11 @@ func runGUI() bool {
 		})
 	})
 
-	w.SetHtml(guiHTML)
+	html := guiHTML
+	if DryRun {
+		html = strings.Replace(html, `id="dryRun">`, `id="dryRun" checked>`, 1)
+	}
+	w.SetHtml(html)
 	w.Run()
 
 	// 消息循环退出 = 窗口已销毁。此后禁止任何 Dispatch/Eval，

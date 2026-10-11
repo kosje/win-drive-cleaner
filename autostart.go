@@ -186,7 +186,6 @@ func runAutoFlow() {
 		}
 	}
 
-	DryRun = false
 	if !execute(s.Deep, noUAC) { // 提权子进程接管，父进程不重复清理通讯文件
 		return
 	}
@@ -202,7 +201,11 @@ func commsAutoDelete(days int) {
 		if b == 0 && n == 0 {
 			continue
 		}
-		fmt.Printf("   %-18s 已删除 %d 个文件，释放 %s%s\n", t.Name, n, formatBytes(b), errNote(int(e)))
+		verb := "已删除"
+		if DryRun {
+			verb = "预计清理"
+		}
+		fmt.Printf("   %-18s %s %d 个文件，大小 %s%s\n", t.Name, verb, n, formatBytes(b), errNote(int(e)))
 	}
 }
 

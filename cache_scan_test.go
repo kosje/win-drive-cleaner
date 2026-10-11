@@ -5,7 +5,9 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -235,5 +237,38 @@ func TestWindowsToolCannotBeReplacedThroughPath(t *testing.T) {
 	cmd := windowsTool("compact.exe", "/?")
 	if !pathWithin(cmd.Path, systemRoot()) || filepath.Base(cmd.Path) != "compact.exe" {
 		t.Fatal("tool resolved outside Windows", cmd.Path)
+	}
+}
+
+func TestAutoDryRunCLILeavesTemporaryAndCommsFilesUntouched(t *testing.T) {
+	if os.Getenv("WDC_AUTO_DRY_HELPER") == "1" {
+		flag.CommandLine = flag.NewFlagSet("wdc", flag.ExitOnError)
+		os.Args = []string{"wdc", "--auto", "--dry-run", "--elevated", "--no-uac"}
+		main()
+		os.Exit(0)
+	}
+	isolatedPaths(t)
+	settings := defaultSettings()
+	settings.CleanComms = true
+	if err := saveSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	temporary := filepath.Join(userTemp(), "keep.txt")
+	attachment := filepath.Join(userProfile(), "Documents", "WeChat Files", "account", "old.jpg")
+	writeTestFile(t, temporary, "temporary")
+	writeTestFile(t, attachment, "attachment")
+	old := time.Now().AddDate(0, 0, -45)
+	if err := os.Chtimes(attachment, old, old); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAutoDryRunCLILeavesTemporaryAndCommsFilesUntouched$")
+	cmd.Env = append(os.Environ(), "WDC_AUTO_DRY_HELPER=1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("auto dry-run: %v\n%s", err, output)
+	}
+	for path, expected := range map[string]string{temporary: "temporary", attachment: "attachment"} {
+		if data, err := os.ReadFile(path); err != nil || string(data) != expected {
+			t.Fatal("auto dry-run changed data", path, err)
+		}
 	}
 }

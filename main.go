@@ -51,6 +51,7 @@ func main() {
 	case help:
 		printHelp()
 	case *autoFlag:
+		DryRun = dry
 		runAutoFlow()
 	case *scanComms:
 		CommsFlowReadOnly(30)
@@ -65,6 +66,7 @@ func main() {
 	case *manageStartupFlag:
 		manageStartup()
 	case *guiFlag:
+		DryRun = dry
 		if !runGUI() {
 			inInteractive = true
 			interactive(noUAC)
