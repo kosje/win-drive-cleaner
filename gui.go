@@ -71,7 +71,8 @@ func (a *guiApp) async(task string, job func() (interface{}, error)) {
 }
 
 // runGUI 启动 WebView2 原生窗口并承载图形界面。
-func runGUI() {
+// 返回是否成功启动并运行完 GUI（创建失败返回 false，供调用方回退到交互菜单）。
+func runGUI() bool {
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug: false,
 		WindowOptions: webview2.WindowOptions{
@@ -85,8 +86,8 @@ func runGUI() {
 		fmt.Println("  GUI 启动失败：未能创建 WebView2 窗口。")
 		fmt.Println("  原因通常是系统缺少 WebView2 运行时（Win10/21H2+ 通常已自带；")
 		fmt.Println("  Win8 / 早期 Win10 需安装 Microsoft Edge WebView2 Runtime）。")
-		fmt.Println("  你仍可使用命令行模式：直接回车进入交互菜单。")
-		return
+		fmt.Println("  已回退到命令行交互菜单。")
+		return false
 	}
 
 	app := &guiApp{w: w}
@@ -144,6 +145,14 @@ func runGUI() {
 		return map[string]interface{}{"started": true, "task": "bigfiles"}, nil
 	})
 
+	// 大文件多选删除：前端回传完整路径，后端白名单校验后删除
+	_ = w.Bind("apiBigFilesDelete", func(paths []string) (map[string]interface{}, error) {
+		app.async("bigfilesDelete", func() (interface{}, error) {
+			return deleteBigFilesJob(paths)
+		})
+		return map[string]interface{}{"started": true, "task": "bigfilesDelete"}, nil
+	})
+
 	// 视频 / 录屏扫描
 	_ = w.Bind("apiMediaScan", func() (map[string]interface{}, error) {
 		app.async("media", scanMediaJob)
@@ -172,4 +181,5 @@ func runGUI() {
 	// 消息循环退出 = 窗口已销毁。此后禁止任何 Dispatch/Eval，
 	// 否则后台扫描任务会向已释放的 WebView2 对象派发调用，把进程带崩。
 	app.closed.Store(true)
+	return true
 }

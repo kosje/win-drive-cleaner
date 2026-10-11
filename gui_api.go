@@ -298,6 +298,72 @@ func scanBigFilesJob() (interface{}, error) {
 	return map[string]interface{}{"items": out, "total": total}, nil
 }
 
+// deleteBigFilesJob 按路径删除用户勾选的大文件。
+//
+// 与 deleteCacheJob 同理：前端回传完整路径，后端用 isBigFileDeletable 做
+// 白名单校验（必须位于系统盘、非系统目录、非保留文件、是普通文件），
+// 任一路径非法即整体拒绝，杜绝删错 / 删除系统文件。
+func deleteBigFilesJob(paths []string) (interface{}, error) {
+	if len(paths) == 0 {
+		return nil, errors.New("未选择要删除的文件")
+	}
+
+	cleaned := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if !isBigFileDeletable(p) {
+			return nil, fmt.Errorf("路径不在允许删除的范围内，已取消全部操作: %s", p)
+		}
+		c := filepath.Clean(p)
+		dup := false
+		for _, e := range cleaned {
+			if e == c {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			cleaned = append(cleaned, c)
+		}
+	}
+
+	var deleted, errs int
+	var freed int64
+	items := make([]map[string]interface{}, 0, len(cleaned))
+
+	for _, p := range cleaned {
+		var size int64
+		if st, err := os.Stat(p); err == nil {
+			size = st.Size()
+		}
+		logDeletion(p, size)
+
+		res := &Result{Name: "大文件", Path: p}
+		if DryRun {
+			res.Deleted = 1
+			res.Bytes = size
+		} else {
+			res.deleteFile(p, size)
+		}
+		deleted += res.Deleted
+		errs += res.Errors
+		freed += res.Bytes
+		items = append(items, map[string]interface{}{
+			"path":    p,
+			"name":    filepath.Base(p),
+			"bytes":   res.Bytes,
+			"deleted": res.Deleted,
+			"errors":  res.Errors,
+		})
+	}
+
+	return map[string]interface{}{
+		"deleted": deleted,
+		"errors":  errs,
+		"bytes":   freed,
+		"items":   items,
+	}, nil
+}
+
 // ---------- 视频 / 录屏 ----------
 
 // scanMediaJob 收集常见目录下的视频候选文件（只读）。

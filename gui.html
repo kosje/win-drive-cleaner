@@ -103,7 +103,7 @@
       <button data-sec="log">清理日志</button>
       <button data-sec="disk">磁盘信息</button>
     </div>
-    <div class="foot">v1.6.1 · WebView2 原生窗口<br>绿色单文件 · 无需安装</div>
+    <div class="foot">v1.7.0 · WebView2 原生窗口<br>绿色单文件 · 无需安装</div>
   </aside>
 
   <main id="main">
@@ -162,15 +162,16 @@
 
       <section class="sec" id="sec-big">
         <div class="card">
-          <h2>大文件检测（≥500MB · Top 20，只列不删）</h2>
-          <p class="hint">已排除 Windows / Program Files / ProgramData 等系统目录与 pagefile.sys 等保留文件。</p>
+          <h2>大文件检测（≥500MB · Top 20）</h2>
+          <p class="hint">已排除 Windows / Program Files / ProgramData 等系统目录与 pagefile.sys 等保留文件。勾选后可多选删除（<b>不可恢复</b>，删除前写入审计日志）。</p>
           <div class="row">
             <button class="btn" id="btnBig">扫描</button>
+            <button class="btn warn" id="btnBigDel" disabled>删除所选</button>
             <span class="busy" id="bigBusy"><span class="spin"></span><span class="busy-txt">全盘扫描中，通常需 10-60 秒…</span></span>
           </div>
         </div>
         <div class="card"><table>
-          <thead><tr><th style="width:110px">大小</th><th>路径</th><th style="width:90px"></th></tr></thead>
+          <thead><tr><th style="width:36px"></th><th style="width:110px">大小</th><th>路径</th><th style="width:90px"></th></tr></thead>
           <tbody id="bigBody"></tbody>
         </table></div>
       </section>
@@ -490,27 +491,56 @@ async function loadStartups(){
 }
 
 /* ---------------- 大文件 ---------------- */
+function syncBigDelBtn(){
+  var n=document.querySelectorAll('#bigBody input[type=checkbox]:checked').length;
+  el("btnBigDel").disabled = n===0;
+  el("btnBigDel").textContent = n? ("删除所选 ("+n+")") : "删除所选";
+}
 el("btnBig").addEventListener("click",function(){
   el("btnBig").disabled=true; busy("bigBusy",true);
-  var tb=el("bigBody"); tb.innerHTML='<tr><td colspan="3" class="muted">正在全盘扫描…</td></tr>';
+  var tb=el("bigBody"); tb.innerHTML='<tr><td colspan="4" class="muted">正在全盘扫描…</td></tr>';
   runTask("bigfiles", function(){ return api.apiBigFiles(); })
     .then(function(r){
       tb.innerHTML="";
-      if(!r.items.length){ emptyRow(tb,3,"未发现 ≥500MB 的大文件"); return; }
+      el("btnBigDel").disabled=true;
+      if(!r.items.length){ emptyRow(tb,4,"未发现 ≥500MB 的大文件"); return; }
       r.items.forEach(function(f){
         var tr=document.createElement("tr");
+        var t0=document.createElement("td");
+        var cb=document.createElement("input"); cb.type="checkbox";
+        cb.setAttribute("data-path", f.path);
+        cb.addEventListener("change",syncBigDelBtn);
+        t0.appendChild(cb);
         var a=document.createElement("td"); a.textContent=fmt(f.bytes);
         var b=document.createElement("td"); b.className="mono"; b.textContent=f.path;
         var c=document.createElement("td");
         var btn=document.createElement("button"); btn.className="btn ghost sm"; btn.textContent="打开";
         btn.addEventListener("click",function(){ api.apiOpenFolder(f.path).catch(function(){}); });
         c.appendChild(btn);
-        tr.appendChild(a); tr.appendChild(b); tr.appendChild(c); tb.appendChild(tr);
+        tr.appendChild(t0); tr.appendChild(a); tr.appendChild(b); tr.appendChild(c); tb.appendChild(tr);
       });
       toast("共 "+r.items.length+" 个大文件，合计 "+fmt(r.total));
     })
-    .catch(function(e){ emptyRow(tb,3,"扫描失败: "+e.message); })
+    .catch(function(e){ emptyRow(tb,4,"扫描失败: "+e.message); })
     .finally(function(){ el("btnBig").disabled=false; busy("bigBusy",false); });
+});
+el("btnBigDel").addEventListener("click",function(){
+  var paths=[];
+  Array.prototype.forEach.call(
+    document.querySelectorAll('#bigBody input[type=checkbox]:checked'),
+    function(c){ paths.push(c.getAttribute("data-path")); }
+  );
+  if(!paths.length){ toast("请先勾选"); return; }
+  var msg="将删除以下 "+paths.length+" 个大文件（不可恢复）：\n\n"+paths.join("\n")+"\n\n确定继续？";
+  if(!confirm(msg)) return;
+  el("btnBigDel").disabled=true; busy("bigBusy",true);
+  runTask("bigfilesDelete", function(){ return api.apiBigFilesDelete(paths); })
+    .then(function(r){
+      toast("已删除 "+r.deleted+" 个文件，释放 "+fmt(r.bytes)+(r.errors?("，"+r.errors+" 个失败"):""));
+      el("btnBig").click();   /* 重新扫描刷新列表 */
+    })
+    .catch(function(e){ toast("删除失败: "+e.message); el("btnBigDel").disabled=false; })
+    .finally(function(){ busy("bigBusy",false); });
 });
 
 /* ---------------- AppData 软件缓存 ---------------- */

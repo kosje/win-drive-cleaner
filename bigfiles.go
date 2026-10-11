@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // BigFile 一个超过阈值的大文件。
@@ -141,4 +142,35 @@ func bigFileFlow() {
 // BigFilesFlowReadOnly 只读（--scan-bigfiles 用）。
 func BigFilesFlowReadOnly() {
 	printBigFiles(500, 20)
+}
+
+// isBigFileDeletable 校验目标是否为可安全删除的大文件。
+// 准入条件（与扫描排除规则一致，防止误删系统文件）：
+//   - 必须是绝对路径，且位于系统盘内
+//   - 不在 bigFileExcludedDirs 排除目录（Windows/Program Files/ProgramData 等）
+//   - 不是系统保留文件（pagefile.sys / hiberfil.sys 等）
+//   - 必须是真实存在的普通文件（非目录、非软链）
+func isBigFileDeletable(path string) bool {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	if clean == "" || !filepath.IsAbs(clean) {
+		return false
+	}
+	root := filepath.Clean(systemDrive())
+	if clean != root && !strings.HasPrefix(clean, root+string(filepath.Separator)) {
+		return false
+	}
+	for _, ex := range bigFileExcludedDirs() {
+		exClean := filepath.Clean(ex)
+		if clean == exClean || strings.HasPrefix(clean, exClean+string(filepath.Separator)) {
+			return false
+		}
+	}
+	if bigFileExcludedFiles()[filepath.Base(clean)] {
+		return false
+	}
+	info, err := os.Lstat(clean)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return true
 }

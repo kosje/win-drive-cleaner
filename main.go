@@ -10,7 +10,7 @@ import (
 )
 
 // 版本
-const version = "1.6.1"
+const version = "1.7.0"
 
 // 运行参数（由主流程填充）
 var (
@@ -65,7 +65,10 @@ func main() {
 	case *manageStartupFlag:
 		manageStartup()
 	case *guiFlag:
-		runGUI()
+		if !runGUI() {
+			inInteractive = true
+			interactive(noUAC)
+		}
 	case *compactFlag:
 		RunCompact(false)
 	case deep:
@@ -78,6 +81,24 @@ func main() {
 		DryRun = true
 		execute(false, noUAC)
 	default:
+		runDefault()
+	}
+}
+
+// runDefault 双击运行（无任何命令行参数）时的默认入口：
+// 在 Win10/11 上默认打开 GUI，并且启动即请求管理员权限；
+// WebView2 缺失（Win8 / 早期 Win10）时回退到命令行交互菜单。
+func runDefault() {
+	// 非管理员且未禁用 UAC：启动即请求管理员权限，提权后直接进入 GUI
+	if !noUAC && !isAdmin() {
+		if err := elevateSelfWithArgs("--gui"); err == nil {
+			// 提权成功：父进程结束，子进程(管理员 + --gui)接管并负责运行 GUI
+			return
+		}
+		// 提权被取消/失败：降级为当前权限继续，不阻塞用户
+	}
+	// 以当前权限启动 GUI；WebView2 缺失或创建失败时回退交互菜单
+	if !runGUI() {
 		inInteractive = true
 		interactive(noUAC)
 	}
@@ -200,8 +221,10 @@ func interactive(skipUAC bool) {
 		choice = strings.ToLower(strings.TrimSpace(choice))
 		switch choice {
 		case "1":
+			DryRun = false
 			execute(false, skipUAC)
 		case "2":
+			DryRun = false
 			execute(true, skipUAC)
 		case "3":
 			DryRun = true
