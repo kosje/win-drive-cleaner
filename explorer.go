@@ -28,7 +28,7 @@ func OpenInExplorer(path string) error {
 	if !directory {
 		return revealInExplorer(p)
 	}
-	cmd := exec.Command("explorer.exe", p)
+	cmd := exec.Command(filepath.Join(systemRoot(), "explorer.exe"), p)
 	if err := cmd.Start(); err != nil {
 		return err
 	}

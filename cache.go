@@ -5,76 +5,66 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
-// CacheEntry 一个软件在 AppData 下的缓存/数据目录及其大小。
+// CacheEntry 一个软件在白名单中的可重新生成缓存目录及其大小。
 type CacheEntry struct {
 	Software string // 软件名（目录名）
 	Path     string // 目录完整路径
 	Bytes    int64
 }
 
-// cacheRoots 扫描 AppData 下常见会堆积缓存的软件目录。
-// 只列大小供用户判断，不自动删；用户勾选后才删。
-func cacheRoots() []string {
-	local := localAppData()
-	roaming := appDataDir()
-	return []string{local, roaming}
-}
-
-// scanCache 扫描两个 AppData 根目录的**直接子目录**，统计每个子目录总大小，
+// scanCache 仅统计白名单中的已知缓存目录，
 // 只保留 size >= minBytes 且非系统关键目录的项，按大小降序。
 func scanCache(minBytes int64) []CacheEntry {
+	out, _ := scanCacheControlled(minBytes, nil)
+	return out
+}
+
+func scanCacheControlled(minBytes int64, control *scanControl) ([]CacheEntry, error) {
 	seen := map[string]bool{}
 	var out []CacheEntry
-	for _, root := range cacheRoots() {
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			continue
+	defer control.flush()
+	for _, rule := range cacheRules() {
+		if err := control.check(); err != nil {
+			return nil, err
 		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			p := filepath.Join(root, name)
+		paths, err := filepath.Glob(filepath.Join(rule.root, rule.pattern))
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range paths {
 			key := strings.ToLower(filepath.Clean(p))
-			if seen[key] || hasReparseAncestor(p) {
+			if seen[key] || !isCacheDeletable(p) {
 				continue
 			}
 			seen[key] = true
-			// 跳过系统关键目录
-			if isSystemCacheDir(name) {
-				continue
+			var b int64
+			err := control.walk(p, func(_ string, info os.FileInfo, err error) error {
+				if err == nil && info.Mode().IsRegular() {
+					b += info.Size()
+				}
+				return nil
+			})
+			if err != nil {
+				return nil, err
 			}
-			n, b := walkSize(p)
-			_ = n
 			if b < minBytes {
 				continue
 			}
-			out = append(out, CacheEntry{Software: name, Path: p, Bytes: b})
+			out = append(out, CacheEntry{Software: rule.software, Path: p, Bytes: b})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Bytes != out[j].Bytes {
 			return out[i].Bytes > out[j].Bytes
 		}
-		return out[i].Software < out[j].Software
+		return out[i].Path < out[j].Path
 	})
-	return out
-}
-
-// isSystemCacheDir 跳过 Windows/系统自己维护、删了会出问题的目录。
-func isSystemCacheDir(name string) bool {
-	low := strings.ToLower(name)
-	switch low {
-	case "microsoft", "packages", "microsoft edge", "msedge", "google",
-		"kaspersky", "endpoint protection", "one drive", "onedrive", "windows", "temp", "windrivecleaner":
-		// 系统/核心/已单独处理目录，不让用户误删
-		return true
-	}
-	return false
+	return out, control.check()
 }
 
 // printCacheScan 显示 Top N 缓存目录（N<=0 时默认 15）。
@@ -83,7 +73,7 @@ func printCacheScan(top int) {
 		top = 15
 	}
 	fmt.Println()
-	fmt.Println("  ── AppData 软件缓存（按大小 Top，勾选删除）──")
+	fmt.Println("  ── 软件缓存（仅白名单中的可重新生成缓存）──")
 	list := scanCache(10 << 20) // 只显示 >= 10MB 的，太小无意义
 	if len(list) == 0 {
 		fmt.Println("   未发现 10MB 以上的 AppData 软件缓存目录。")
@@ -99,7 +89,7 @@ func printCacheEntries(list []CacheEntry) {
 	for i, e := range list {
 		fmt.Printf("  M%02d  %-16s %10s  %s\n", i+1, e.Software, formatBytes(e.Bytes), e.Path)
 	}
-	fmt.Println("  （M 序号用于勾选删除；删的是该软件的缓存/数据目录，可能丢失其登录态/设置）")
+	fmt.Println("  （仅清理列出的缓存内容，保留软件配置、登录数据及缓存目录；建议先关闭对应软件）")
 }
 
 // cacheIndex 与 mediaIndex 类似：保存本轮扫描结果供用户按序号操作。
@@ -143,7 +133,7 @@ func cacheFlow() {
 		// 先汇总要删的内容给用户看清
 		var total int64
 		fmt.Println()
-		fmt.Println("  将要删除以下软件目录（不可恢复，登录态/设置会丢失）:")
+		fmt.Println("  将要清理以下缓存目录的内容（建议先关闭对应软件）:")
 		for _, id := range valid {
 			e := cacheIndex[id-1]
 			total += e.Bytes
@@ -160,7 +150,7 @@ func cacheFlow() {
 				continue
 			}
 			res := &Result{Name: "软件缓存", Path: e.Path}
-			res.deleteTree(e.Path)
+			res.clearContents(e.Path)
 			note := ""
 			if res.Errors > 0 {
 				note = fmt.Sprintf("（%d 项因占用未删）", res.Errors)
@@ -203,22 +193,12 @@ func trimLower(s string) string {
 // parseInts 从 "1,3,5 m7" 之类的串里抽出所有正整数。
 func parseInts(s string) []int {
 	var out []int
-	cur := 0
-	any := false
-	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			cur = cur*10 + int(r-'0')
-			any = true
-			continue
+	parts := strings.FieldsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || r == ',' || r == '，' || r == ';' })
+	for _, part := range parts {
+		part = strings.TrimPrefix(strings.ToLower(part), "m")
+		if n, err := strconv.Atoi(part); err == nil && n > 0 {
+			out = append(out, n)
 		}
-		if any {
-			out = append(out, cur)
-			cur = 0
-			any = false
-		}
-	}
-	if any {
-		out = append(out, cur)
 	}
 	return out
 }

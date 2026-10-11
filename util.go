@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -34,6 +35,17 @@ func formatBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%d B", n)
 	}
+}
+
+// Resolve maintenance tools from Windows itself, never from a user-controlled PATH.
+func windowsTool(name string, args ...string) *exec.Cmd {
+	dir := "System32"
+	if runtime.GOARCH == "386" && os.Getenv("PROCESSOR_ARCHITEW6432") != "" {
+		if info, err := os.Stat(filepath.Join(systemRoot(), "Sysnative")); err == nil && info.IsDir() {
+			dir = "Sysnative"
+		}
+	}
+	return exec.Command(filepath.Join(systemRoot(), dir, name), args...)
 }
 
 // ---------- 路径解析（基于环境变量，兼容 Win8/10/11） ----------

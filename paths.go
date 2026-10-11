@@ -1,11 +1,75 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/windows"
 )
+
+// Reject Win32 aliases that filepath.Clean does not normalize, such as
+// Windows. and alternate data streams. Device namespaces are not cleanup paths.
+func isPlainWindowsPath(path string) bool {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) || strings.HasPrefix(clean, `\\?\`) || strings.HasPrefix(clean, `\\.\`) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(clean, filepath.VolumeName(clean)), `\`)
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if strings.TrimRight(part, " .") != part || strings.ContainsAny(part, ":\x00") {
+			return false
+		}
+	}
+	return true
+}
+
+// Resolve existing files using their Windows handle, including 8.3 aliases.
+func resolvedPath(path string) (string, error) {
+	if !isPlainWindowsPath(path) {
+		return "", fmt.Errorf("不支持的清理路径: %s", path)
+	}
+	name, err := windows.UTF16PtrFromString(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	handle, err := windows.CreateFile(name, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(handle)
+	buf := make([]uint16, 512)
+	for {
+		n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], uint32(len(buf)), 0)
+		if err != nil {
+			return "", err
+		}
+		if n >= uint32(len(buf)) {
+			buf = make([]uint16, n+1)
+			continue
+		}
+		final := windows.UTF16ToString(buf[:n])
+		if strings.HasPrefix(final, `\\?\UNC\`) {
+			final = `\\` + strings.TrimPrefix(final, `\\?\UNC\`)
+		} else {
+			final = strings.TrimPrefix(final, `\\?\`)
+		}
+		return filepath.Clean(final), nil
+	}
+}
+
+func resolvedPathOrOriginal(path string) string {
+	if resolved, err := resolvedPath(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
 
 // samePath and pathWithin use Windows' case-insensitive path semantics.
 func samePath(a, b string) bool {

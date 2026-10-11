@@ -102,6 +102,10 @@ func cleanItem(it CleanItem) *Result {
 
 func cleanItemWithDryRun(it CleanItem, dry bool) *Result {
 	res := &Result{Name: it.Name, Path: it.Path, dryRun: dry}
+	if !isPlainWindowsPath(it.Path) {
+		res.Errors++
+		return res
+	}
 	pi, err := os.Lstat(it.Path)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -112,6 +116,11 @@ func cleanItemWithDryRun(it CleanItem, dry bool) *Result {
 	if hasReparseAncestor(it.Path) || samePath(it.Path, filepath.Dir(it.Path)) ||
 		samePath(it.Path, systemRoot()) || pathWithin(it.Path, filepath.Join(systemRoot(), "WinSxS")) ||
 		pathWithin(it.Path, filepath.Join(systemRoot(), "System32")) {
+		res.Errors++
+		return res
+	}
+	resolved, err := resolvedPath(it.Path)
+	if err != nil || isProtectedCleanTarget(resolved) {
 		res.Errors++
 		return res
 	}
@@ -143,7 +152,23 @@ func cleanItemWithDryRun(it CleanItem, dry bool) *Result {
 	return res
 }
 
+func isProtectedCleanTarget(path string) bool {
+	for _, root := range append([]string{systemDrive(), systemRoot(), userProfile(), localAppData(),
+		appDataDir(), allUsersProfile(), filepath.Dir(localAppData()), os.Getenv("ProgramFiles"),
+		os.Getenv("ProgramFiles(x86)"), os.Getenv("ProgramW6432")}, mediaRoots()...) {
+		if root != "" && samePath(path, resolvedPathOrOriginal(root)) {
+			return true
+		}
+	}
+	return pathWithin(path, filepath.Join(resolvedPathOrOriginal(systemRoot()), "System32")) ||
+		pathWithin(path, filepath.Join(resolvedPathOrOriginal(systemRoot()), "WinSxS"))
+}
+
 func (r *Result) deleteFile(path string, size int64) {
+	if !isPlainWindowsPath(path) {
+		r.Errors++
+		return
+	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || hasReparseAncestor(path) {
 		r.Errors++
@@ -182,6 +207,10 @@ func (r *Result) clearContents(dir string) {
 }
 
 func (r *Result) deleteTree(dir string) {
+	if !isPlainWindowsPath(dir) {
+		r.Errors++
+		return
+	}
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if !os.IsNotExist(err) {

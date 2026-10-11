@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/heap"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,11 +16,33 @@ type BigFile struct {
 	Bytes int64
 }
 
+type bigFileHeap []BigFile
+
+func (h bigFileHeap) Len() int { return len(h) }
+func (h bigFileHeap) Less(i, j int) bool {
+	if h[i].Bytes != h[j].Bytes {
+		return h[i].Bytes < h[j].Bytes
+	}
+	return h[i].Path > h[j].Path
+}
+func (h bigFileHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *bigFileHeap) Push(x interface{}) { *h = append(*h, x.(BigFile)) }
+func (h *bigFileHeap) Pop() interface{} {
+	old := *h
+	x := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return x
+}
+
 // bigFileExcludedDirs 不应遍历/列出的目录（相对系统盘根的后缀匹配）。
 func bigFileExcludedDirs() []string {
 	root := systemDrive()
-	return []string{
+	paths := []string{
 		systemRoot(),
+		allUsersProfile(),
+		os.Getenv("ProgramFiles"),
+		os.Getenv("ProgramFiles(x86)"),
+		os.Getenv("ProgramW6432"),
 		filepath.Join(root, "Windows"),
 		filepath.Join(root, "Program Files"),
 		filepath.Join(root, "Program Files (x86)"),
@@ -29,6 +52,13 @@ func bigFileExcludedDirs() []string {
 		filepath.Join(root, "Recovery"),
 		filepath.Join(root, "PerfLogs"),
 	}
+	var out []string
+	for _, path := range paths {
+		if path != "" {
+			out = append(out, resolvedPathOrOriginal(path))
+		}
+	}
+	return uniqueStrings(out)
 }
 
 // bigFileExcludedFiles 系统保留文件，不是"垃圾"。
@@ -42,11 +72,20 @@ func bigFileExcludedFiles() map[string]bool {
 // scanBigFiles 扫描系统盘，找出 >= minMB 的文件（排除系统目录/保留文件），按大小降序取 Top N。
 // 只列不删——这些文件（误下的大文件/旧安装包/视频）往往才是 C 盘最大的占用。
 func scanBigFiles(minMB, top int) []BigFile {
+	out, _ := scanBigFilesControlled(minMB, top, nil)
+	return out
+}
+
+func scanBigFilesControlled(minMB, top int, control *scanControl) ([]BigFile, error) {
+	defer control.flush()
 	if minMB <= 0 {
 		minMB = 500
 	}
 	if top <= 0 {
 		top = 20
+	}
+	if int64(minMB) > (1<<63-1)>>20 {
+		return nil, control.check() // a threshold beyond int64 cannot match any file size
 	}
 	minBytes := int64(minMB) << 20
 	root := systemDrive()
@@ -63,8 +102,8 @@ func scanBigFiles(minMB, top int) []BigFile {
 		return false
 	}
 
-	var out []BigFile
-	safeWalk(root, func(p string, info os.FileInfo, err error) error {
+	var largest bigFileHeap
+	err := control.walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			// 无权限目录：若是目录且未排除则剪枝；否则跳过本节点
 			if info != nil && info.IsDir() && isExcludedDir(p) {
@@ -82,15 +121,27 @@ func scanBigFiles(minMB, top int) []BigFile {
 			return nil
 		}
 		if info.Size() >= minBytes {
-			out = append(out, BigFile{Path: p, Bytes: info.Size()})
+			file := BigFile{Path: p, Bytes: info.Size()}
+			if len(largest) < top {
+				heap.Push(&largest, file)
+			} else if file.Bytes > largest[0].Bytes || (file.Bytes == largest[0].Bytes && file.Path < largest[0].Path) {
+				largest[0] = file
+				heap.Fix(&largest, 0)
+			}
 		}
 		return nil
 	})
-	sort.Slice(out, func(i, j int) bool { return out[i].Bytes > out[j].Bytes })
-	if len(out) > top {
-		out = out[:top]
+	if err != nil {
+		return nil, err
 	}
-	return out
+	out := []BigFile(largest)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Bytes != out[j].Bytes {
+			return out[i].Bytes > out[j].Bytes
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out, control.check()
 }
 
 // printBigFiles 显示 Top N 大文件。
@@ -160,12 +211,20 @@ func isBigFileDeletable(path string) bool {
 	if clean == "" || !filepath.IsAbs(clean) {
 		return false
 	}
-	root := filepath.Clean(systemDrive())
+	if hasReparseAncestor(clean) {
+		return false
+	}
+	var err error
+	clean, err = resolvedPath(clean)
+	if err != nil {
+		return false
+	}
+	root := resolvedPathOrOriginal(systemDrive())
 	if !pathWithin(clean, root) {
 		return false
 	}
 	for _, ex := range bigFileExcludedDirs() {
-		exClean := filepath.Clean(ex)
+		exClean := resolvedPathOrOriginal(ex)
 		if pathWithin(clean, exClean) {
 			return false
 		}

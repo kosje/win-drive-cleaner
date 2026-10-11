@@ -32,6 +32,7 @@ func diskUsage() (free, total int64) {
 func apiDiskInfo() (map[string]interface{}, error) {
 	free, total := diskUsage()
 	return map[string]interface{}{
+		"version":     version,
 		"free":        free,
 		"total":       total,
 		"admin":       isAdmin(),
@@ -145,16 +146,29 @@ func apiElevate() (map[string]interface{}, error) {
 // ---------- 通讯软件缓存 ----------
 
 // scanCommsJob 统计各通讯软件本地目录大小（只读）。
-func scanCommsJob() (interface{}, error) {
+func scanCommsJob(control *scanControl) (interface{}, error) {
+	defer control.flush()
 	targets := commsTargets()
 	out := make([]map[string]interface{}, 0, len(targets))
 	for _, t := range targets {
 		var total int64
 		exists := make([]string, 0, len(t.Roots))
 		for _, root := range t.Roots {
+			if err := control.check(); err != nil {
+				return nil, err
+			}
 			if st, err := os.Stat(root); err == nil && st.IsDir() {
 				exists = append(exists, root)
-				_, b := walkSize(root)
+				var b int64
+				err := control.walk(root, func(_ string, info os.FileInfo, err error) error {
+					if err == nil && info.Mode().IsRegular() {
+						b += info.Size()
+					}
+					return nil
+				})
+				if err != nil {
+					return nil, err
+				}
 				total += b
 			}
 		}
@@ -171,8 +185,11 @@ func scanCommsJob() (interface{}, error) {
 // ---------- AppData 软件缓存 ----------
 
 // scanCacheJob 列出 AppData 下 ≥10MB 的软件目录（只读）。
-func scanCacheJob() (interface{}, error) {
-	entries := scanCache(10 << 20)
+func scanCacheJob(control *scanControl) (interface{}, error) {
+	entries, err := scanCacheControlled(10<<20, control)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]map[string]interface{}, 0, len(entries))
 	var total int64
 	for _, e := range entries {
@@ -184,38 +201,6 @@ func scanCacheJob() (interface{}, error) {
 		total += e.Bytes
 	}
 	return map[string]interface{}{"items": out, "total": total}, nil
-}
-
-// isCacheDeletable 校验目标路径确实位于 AppData 扫描根目录的**直接子目录**内，
-// 且不是被保护的系统目录。
-// 这是删除操作唯一的准入闸门：前端只能提交 scanCache 返回过的路径，
-// 不能自行构造任意路径，避免误删 AppData 之外的文件。
-func isCacheDeletable(path string) bool {
-	if path == "" {
-		return false
-	}
-	clean := filepath.Clean(path)
-	// 必须是绝对路径
-	if !filepath.IsAbs(clean) {
-		return false
-	}
-	for _, root := range cacheRoots() {
-		rootClean := filepath.Clean(root)
-		// 只接受根目录的**直接子目录**，杜绝 "..\\..\\Windows" 之类的穿越
-		if !samePath(filepath.Dir(clean), rootClean) {
-			continue
-		}
-		name := filepath.Base(clean)
-		if name == "" || name == "." || name == ".." {
-			return false
-		}
-		if isSystemCacheDir(name) {
-			return false
-		}
-		info, err := os.Lstat(clean)
-		return err == nil && info.IsDir() && !hasReparseAncestor(clean)
-	}
-	return false
 }
 
 // deleteCacheJob 按**路径**删除软件缓存目录。
@@ -255,7 +240,7 @@ func deleteCacheJob(paths []string) (interface{}, error) {
 
 	for _, p := range cleaned {
 		res := &Result{Name: "软件缓存", Path: p}
-		res.deleteTree(p)
+		res.clearContents(p)
 		deleted += res.Deleted
 		errs += res.Errors
 		freed += res.Bytes
@@ -279,8 +264,11 @@ func deleteCacheJob(paths []string) (interface{}, error) {
 // ---------- 大文件 ----------
 
 // scanBigFilesJob 扫描系统盘 ≥500MB 的文件 Top 20（只列不删）。
-func scanBigFilesJob() (interface{}, error) {
-	list := scanBigFiles(500, 20)
+func scanBigFilesJob(control *scanControl) (interface{}, error) {
+	list, err := scanBigFilesControlled(500, 20, control)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]map[string]interface{}, 0, len(list))
 	var total int64
 	for _, f := range list {
@@ -352,8 +340,11 @@ func deleteBigFilesJob(paths []string) (interface{}, error) {
 // ---------- 视频 / 录屏 ----------
 
 // scanMediaJob 收集常见目录下的视频候选文件（只读）。
-func scanMediaJob() (interface{}, error) {
-	list := scanMedia()
+func scanMediaJob(control *scanControl) (interface{}, error) {
+	list, err := scanMediaControlled(control)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]map[string]interface{}, 0, len(list))
 	var total int64
 	for _, m := range list {

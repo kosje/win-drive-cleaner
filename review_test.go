@@ -167,10 +167,10 @@ func TestDryRunDoesNotLeakIntoExplicitDeletion(t *testing.T) {
 	}
 }
 
-func TestCacheScanKeepsSameSoftwareInBothRoots(t *testing.T) {
+func TestCacheScanKeepsDistinctCachePaths(t *testing.T) {
 	isolatedPaths(t)
-	for _, root := range cacheRoots() {
-		writeTestFile(t, filepath.Join(root, "App", "data"), "123")
+	for _, root := range []string{filepath.Join(localAppData(), "Google", "Chrome", "User Data", "Default", "Cache"), filepath.Join(appDataDir(), "Code", "Cache")} {
+		writeTestFile(t, filepath.Join(root, "data"), "123")
 	}
 	entries := scanCache(1)
 	if len(entries) != 2 || samePath(entries[0].Path, entries[1].Path) {

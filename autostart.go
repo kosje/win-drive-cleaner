@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // 自启动 + 倒计时自动执行。
@@ -26,6 +27,7 @@ type Settings struct {
 	CountdownSec int  `json:"countdownSec"` // 自动执行前的倒计时秒数
 	Deep         bool `json:"deep"`         // 上次使用的模式（true=深度，false=普通）
 	CommsDays    int  `json:"commsDays"`    // 上次通讯清理的天数
+	CleanComms   bool `json:"cleanComms"`   // 自动通讯清理必须单独开启
 }
 
 // lastCommsDays 当前运行使用的通讯清理天数（自动模式下取“上次设置”）。
@@ -51,28 +53,67 @@ func loadSettings() Settings {
 	if e := json.Unmarshal(b, &s); e != nil {
 		return defaultSettings()
 	}
-	if s.CountdownSec < 5 {
+	if s.CountdownSec < 5 || s.CountdownSec > 3600 {
 		s.CountdownSec = 30
 	}
-	if s.CommsDays < 0 {
+	if s.CommsDays < 0 || s.CommsDays > 36500 {
 		s.CommsDays = 0
 	}
 	return s
 }
 
 // saveSettings 持久化设置（自动建目录）。
-func saveSettings(s Settings) {
+func saveSettings(s Settings) error {
+	if s.CountdownSec < 5 || s.CountdownSec > 3600 {
+		return fmt.Errorf("倒计时必须为 5–3600 秒")
+	}
+	if s.CommsDays < 0 || s.CommsDays > 36500 {
+		return fmt.Errorf("通讯清理天数必须为 0–36500")
+	}
 	p := settingsPath()
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
-		return
+		return err
 	}
-	b, _ := json.MarshalIndent(s, "", "  ")
-	_ = os.WriteFile(p, b, 0644)
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(p), ".settings-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close(); _ = os.Remove(f.Name()) }()
+	if _, err := f.Write(b); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	from, err := windows.UTF16PtrFromString(f.Name())
+	if err != nil {
+		return err
+	}
+	to, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}
+
+func persistSettings(s Settings) bool {
+	if err := saveSettings(s); err != nil {
+		fmt.Printf("  设置保存失败，原设置已保留: %v\n", err)
+		return false
+	}
+	return true
 }
 
 // regRun 调用系统自带 reg.exe。
 func regRun(args ...string) (string, error) {
-	out, err := exec.Command("reg", args...).CombinedOutput()
+	out, err := windowsTool("reg.exe", args...).CombinedOutput()
 	return string(out), err
 }
 
@@ -114,8 +155,12 @@ func describeSettings(s Settings) string {
 	if s.Deep {
 		mode = "深度清理"
 	}
-	return fmt.Sprintf("%s | 通讯清理 %d 天前 | 倒计时 %d 秒 | 登录自启=%s",
-		mode, s.CommsDays, s.CountdownSec, onOff(s.Enabled || autostartRegistered()))
+	comms := "关闭"
+	if s.CleanComms && s.CommsDays > 0 {
+		comms = fmt.Sprintf("%d 天前", s.CommsDays)
+	}
+	return fmt.Sprintf("%s | 自动通讯清理=%s | 倒计时 %d 秒 | 登录自启=%s",
+		mode, comms, s.CountdownSec, onOff(s.Enabled || autostartRegistered()))
 }
 
 func onOff(b bool) string {
@@ -145,7 +190,7 @@ func runAutoFlow() {
 	if !execute(s.Deep, noUAC) { // 提权子进程接管，父进程不重复清理通讯文件
 		return
 	}
-	if lastCommsDays > 0 {
+	if s.CleanComms && lastCommsDays > 0 {
 		commsAutoDelete(lastCommsDays)
 	}
 }
@@ -161,13 +206,12 @@ func commsAutoDelete(days int) {
 	}
 }
 
-// countdownCancel 倒计时；期间按任意键则立即取消。返回 true=用户取消。
+// countdownCancel 倒计时；期间按回车取消。返回 true=用户取消。
 func countdownCancel(secs int) bool {
 	if secs < 5 {
 		secs = 30
 	}
-	fmt.Printf("\n  将在 %d 秒后自动执行，按任意键可取消…\n", secs)
-	cancelled := false
+	fmt.Printf("\n  将在 %d 秒后自动执行，按回车可取消…\n", secs)
 	pressCh := make(chan struct{}, 1)
 	go func() {
 		var d string
@@ -177,20 +221,29 @@ func countdownCancel(secs int) bool {
 		default:
 		}
 	}()
-	for i := secs; i > 0; i-- {
-		select {
-		case <-pressCh:
-			cancelled = true
-		default:
-		}
-		if cancelled {
-			break
-		}
-		fmt.Printf("\r  剩余 %2d 秒，按任意键取消…   ", i)
-		time.Sleep(1 * time.Second)
-	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	cancelled := waitCountdown(secs, pressCh, ticker.C)
 	fmt.Println()
 	return cancelled
+}
+
+func waitCountdown(secs int, cancel <-chan struct{}, ticks <-chan time.Time) bool {
+	for i := secs; i > 0; i-- {
+		fmt.Printf("\r  剩余 %2d 秒，按回车取消…   ", i)
+		select {
+		case <-cancel:
+			return true
+		case <-ticks:
+		}
+	}
+	// A key received during the final interval must still cancel execution.
+	select {
+	case <-cancel:
+		return true
+	default:
+		return false
+	}
 }
 
 // manageAutostart 交互：管理自启动（开/关 + 设倒计时 + 看上次设置）。
@@ -204,6 +257,7 @@ func manageAutostart() {
 	fmt.Println("   c) 设置自动执行前的倒计时秒数")
 	fmt.Println("   d) 设为深度模式")
 	fmt.Println("   e) 设为普通模式")
+	fmt.Println("   f) 设置自动通讯旧文件清理（默认关闭）")
 	fmt.Println("   q) 返回")
 	var c string
 	_, _ = fmt.Scanln(&c)
@@ -216,7 +270,9 @@ func manageAutostart() {
 			s.Enabled = true
 			fmt.Println("  已开启登录自启动：每次登录后将倒计时自动执行。")
 		}
-		saveSettings(s)
+		if !persistSettings(s) {
+			return
+		}
 	case "b":
 		if err := registerRunKey(false); err != nil {
 			fmt.Println("  关闭失败:", err)
@@ -224,18 +280,36 @@ func manageAutostart() {
 			s.Enabled = false
 			fmt.Println("  已关闭登录自启动，下次启动不再自动执行。")
 		}
-		saveSettings(s)
+		if !persistSettings(s) {
+			return
+		}
 	case "c":
 		s.CountdownSec = askInt("  倒计时秒数(默认 30): ", s.CountdownSec)
-		saveSettings(s)
+		if !persistSettings(s) {
+			return
+		}
 		fmt.Printf("  倒计时已设为 %d 秒。\n", s.CountdownSec)
 	case "d":
 		s.Deep = true
-		saveSettings(s)
+		if !persistSettings(s) {
+			return
+		}
 		fmt.Println("  自动执行模式已设为“深度清理”。")
 	case "e":
 		s.Deep = false
-		saveSettings(s)
+		if !persistSettings(s) {
+			return
+		}
 		fmt.Println("  自动执行模式已设为“普通清理”。")
+	case "f":
+		s.CommsDays = askInt("  自动删除多少天前的通讯文件？(0=关闭): ", 0)
+		s.CleanComms = s.CommsDays > 0
+		if s.CleanComms && !askYesNo("  自动删除旧附件不可恢复，确定启用自动通讯清理？", false) {
+			s.CleanComms = false
+		}
+		if !persistSettings(s) {
+			return
+		}
+		fmt.Printf("  自动通讯清理: %s\n", onOff(s.CleanComms))
 	}
 }

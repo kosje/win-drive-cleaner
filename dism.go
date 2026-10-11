@@ -4,11 +4,12 @@ import (
 	"archive/zip"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -42,7 +43,8 @@ func DismExecute(dryRun bool) (interface{}, error) {
 	if !isAdmin() {
 		return nil, errors.New("DISM 需要管理员权限，请以管理员身份运行本工具")
 	}
-	cmd := exec.Command("DISM", "/Online", "/Cleanup-Image", "/StartComponentCleanup")
+	cmd := windowsTool("dism.exe", "/Online", "/Cleanup-Image", "/StartComponentCleanup")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmd.Stdin = nil // 无控制台时显式置空，避免 Wait 卡在读 stdin
 	out, err := cmd.CombinedOutput()
 	// DISM 的进度输出走 stderr 之外的通道也会合并进来，取尾部若干行做摘要
@@ -103,15 +105,29 @@ func PackLeftovers() (string, int, error) {
 		userTemp(),
 		filepath.Join(allUsersProfile(), "Microsoft", "Windows", "WER"),
 	}
-	var keep []string
-	for _, root := range roots {
+	type candidate struct{ path, name string }
+	var keep []candidate
+	seen := map[string]bool{}
+	labels := []string{"WindowsTemp", "UserTemp", "WER"}
+	for i, root := range roots {
 		safeWalk(root, func(p string, info os.FileInfo, err error) error {
-			if err != nil || info == nil || info.IsDir() {
+			if err != nil || info == nil || !info.Mode().IsRegular() {
+				return nil
+			}
+			if len(keep) >= 5000 {
+				return filepath.SkipAll
+			}
+			key := strings.ToLower(filepath.Clean(p))
+			if seen[key] || (strings.HasPrefix(info.Name(), "CleanerPack_") && strings.EqualFold(filepath.Ext(p), ".zip")) {
 				return nil
 			}
 			// 只打包 50MB 以下的单个文件，避免超大文件
 			if info.Size() <= 50<<20 {
-				keep = append(keep, p)
+				rel, err := filepath.Rel(root, p)
+				if err == nil {
+					keep = append(keep, candidate{p, labels[i] + "/" + filepath.ToSlash(rel)})
+					seen[key] = true
+				}
 			}
 			return nil
 		})
@@ -119,33 +135,63 @@ func PackLeftovers() (string, int, error) {
 	if len(keep) == 0 {
 		return "", 0, nil
 	}
-	sort.Strings(keep)
-	if len(keep) > 5000 {
-		keep = keep[:5000]
-	}
+	sort.Slice(keep, func(i, j int) bool { return keep[i].name < keep[j].name })
 
 	ts := time.Now().Format("20060102_150405")
-	outPath := filepath.Join(userTemp(), "CleanerPack_"+ts+".zip")
-	f, err := os.Create(outPath)
+	f, err := os.CreateTemp(userTemp(), "CleanerPack_"+ts+"_*.zip")
 	if err != nil {
 		return "", 0, err
 	}
-	defer f.Close()
+	outPath := f.Name()
+	complete := false
+	defer func() {
+		_ = f.Close()
+		if !complete {
+			_ = os.Remove(outPath)
+		}
+	}()
 	zw := zip.NewWriter(f)
 
-	// 用相对子目录避免 zip 内文件名冲突
+	// Preserve each root's relative directory structure to avoid collisions.
 	count := 0
 	for _, src := range keep {
-		rel := filepath.Base(filepath.Dir(src)) + "_" + filepath.Base(src)
-		w, err := zw.Create(rel)
-		if err != nil {
+		if hasReparseAncestor(src.path) {
 			continue
 		}
-		if data, err := os.ReadFile(src); err == nil {
-			_, _ = w.Write(data)
-			count++
+		input, err := os.Open(src.path)
+		if err != nil {
+			continue // occupied or unreadable files are not archived
 		}
+		info, err := input.Stat()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 50<<20 {
+			_ = input.Close()
+			continue
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err == nil {
+			header.Name, header.Method = src.name, zip.Deflate
+			var output io.Writer
+			output, err = zw.CreateHeader(header)
+			if err == nil {
+				_, err = io.CopyN(output, input, info.Size())
+			}
+		}
+		_ = input.Close()
+		if err != nil {
+			_ = zw.Close()
+			return "", count, fmt.Errorf("打包残留文件失败: %w", err)
+		}
+		count++
 	}
-	_ = zw.Close()
+	if err := zw.Close(); err != nil {
+		return "", count, err
+	}
+	if err := f.Close(); err != nil {
+		return "", count, err
+	}
+	if count == 0 {
+		return "", 0, nil
+	}
+	complete = true
 	return outPath, count, nil
 }

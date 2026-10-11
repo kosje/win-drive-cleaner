@@ -3,8 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
+	"sync"
+	"syscall"
 )
 
 // compactGo 系统盘压缩（Windows 10/11 自带 LZX 压缩）。
@@ -13,21 +14,18 @@ import (
 // 注意：只压缩系统文件，不影响用户数据；SSD 会轻微影响随机读寿命。
 
 // compactSupported 检测 CompactOS 是否可用（Win10/11 支持）。
-func compactSupported() bool {
-	out, err := exec.Command("compact", "/?").CombinedOutput()
-	if err != nil {
-		return false
-	}
-	// The switch name remains the same in localized help output.
-	s := strings.ToLower(string(out))
-	return strings.Contains(s, "/compactos")
-}
+var compactSupported = sync.OnceValue(func() bool {
+	cmd := windowsTool("compact.exe", "/?")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.CombinedOutput()
+	return err == nil && strings.Contains(strings.ToLower(string(out)), "/compactos")
+})
 
 // CompactExecute 执行系统盘压缩的**核心逻辑**，不依赖控制台输入，
 // 因此可被 GUI（无控制台句柄）安全调用。返回 (结果, error)。
 func CompactExecute(dryRun bool) (interface{}, error) {
 	if !compactSupported() {
-		return nil, errors.New("本系统（Win8/Win7）不支持 LZX 系统压缩，已跳过")
+		return nil, errors.New("当前环境未检测到 CompactOS 系统压缩支持，已跳过")
 	}
 	if dryRun {
 		return "演练模式，未执行任何操作", nil
@@ -35,7 +33,8 @@ func CompactExecute(dryRun bool) (interface{}, error) {
 	if !isAdmin() {
 		return nil, errors.New("系统盘压缩需要管理员权限，请以管理员身份运行本工具")
 	}
-	cmd := exec.Command("compact", "/CompactOS:always")
+	cmd := windowsTool("compact.exe", "/CompactOS:always")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmd.Stdin = nil // 无控制台时显式置空，避免 Wait 卡在读 stdin
 	out, err := cmd.CombinedOutput()
 	tail := outputTail(string(out), 6)
@@ -60,7 +59,7 @@ func RunCompact(dryRun bool) {
 	fmt.Println("  │ 可逆: 日后运行 compact /CompactOS:never 可恢复原状。")
 
 	if !compactSupported() {
-		fmt.Println("  └ [不支持] 本系统（Win8/Win7）没有 LZX 系统压缩，跳过。")
+		fmt.Println("  └ [不支持] 当前环境未检测到 CompactOS 系统压缩支持，跳过。")
 		return
 	}
 
@@ -98,6 +97,6 @@ func CompactFlowReadOnly() {
 	if compactSupported() {
 		fmt.Println("  本系统支持系统压缩（compact /CompactOS:always）。在交互菜单 11) 可执行。")
 	} else {
-		fmt.Println("  本系统不支持 LZX 系统压缩（Win8/7 无此功能）。")
+		fmt.Println("  当前环境未检测到 CompactOS 系统压缩支持。")
 	}
 }

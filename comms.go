@@ -73,7 +73,7 @@ func commsSizeOlder(t CommsTarget, days int) (int64, int, bool) {
 			if info.IsDir() {
 				return nil
 			}
-			if info.ModTime().Before(cutoff) {
+			if isCommsFileEligible(p, info, cutoff) {
 				total += info.Size()
 				count++
 			}
@@ -85,6 +85,9 @@ func commsSizeOlder(t CommsTarget, days int) (int64, int, bool) {
 
 // deleteCommsOlder 删除某通讯软件 days 天前的文件，返回释放字节、条数、错误数。
 func deleteCommsOlder(t CommsTarget, days int) (int64, int64, int64) {
+	if days <= 0 {
+		return 0, 0, 0
+	}
 	var bytes, count, errs int64
 	cutoff := time.Now().AddDate(0, 0, -days)
 	for _, root := range t.Roots {
@@ -92,7 +95,7 @@ func deleteCommsOlder(t CommsTarget, days int) (int64, int64, int64) {
 			if err != nil || info == nil || info.IsDir() {
 				return nil
 			}
-			if info.ModTime().Before(cutoff) {
+			if isCommsFileEligible(p, info, cutoff) {
 				if DryRun {
 					bytes += info.Size()
 					count++
@@ -110,6 +113,21 @@ func deleteCommsOlder(t CommsTarget, days int) (int64, int64, int64) {
 		})
 	}
 	return bytes, count, errs
+}
+
+// File age alone must never classify persistent databases or settings as cache.
+func isCommsFileEligible(path string, info os.FileInfo, cutoff time.Time) bool {
+	if !info.Mode().IsRegular() || !info.ModTime().Before(cutoff) {
+		return false
+	}
+	name := strings.ToLower(filepath.Base(path))
+	for _, suffix := range []string{".db", ".dat", ".sqlite", ".sqlite3", "-wal", "-shm", "-journal",
+		".ini", ".json", ".xml", ".yaml", ".yml", ".toml", ".conf", ".config", ".key", ".pem", ".exe", ".dll"} {
+		if strings.HasSuffix(name, suffix) {
+			return false
+		}
+	}
+	return true
 }
 
 // PrintCommsScan 列出每个通讯软件可清理的大小（不删除）。

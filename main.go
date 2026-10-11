@@ -10,7 +10,7 @@ import (
 )
 
 // 版本
-const version = "1.7.1"
+const version = "1.8.0"
 
 // 运行参数（由主流程填充）
 var (
@@ -169,7 +169,9 @@ func execute(includeDeep, skipUAC bool) bool {
 
 	if !DryRun && includeDeep {
 		// 一键清空回收站已在深度项完成；这里把"删不掉的残留临时文件"压缩成一个 zip，供用户手动转移/删除
-		if packPath, n, _ := PackLeftovers(); n > 0 {
+		if packPath, n, err := PackLeftovers(); err != nil {
+			fmt.Printf("  残留文件打包失败: %v\n", err)
+		} else if n > 0 {
 			fmt.Println()
 			fmt.Printf("  已把 %d 个删不掉的残留临时文件压缩为: %s\n", n, packPath)
 			fmt.Println("  （可手动转移或删除该压缩包；压缩包本身不计入释放空间）")
@@ -216,7 +218,7 @@ func interactive(skipUAC bool) {
 		fmt.Println("   6) 查看 视频/录屏(仅提示大小，可打开所在文件夹手动删)")
 		fmt.Println("   7) DISM 组件清理(可选进阶)")
 		fmt.Println("   8) 本工具登录自启(倒计时自动清理/取消/关闭自启)")
-		fmt.Println("   9) AppData 软件缓存(看大小, 可勾选删除指定软件)")
+		fmt.Println("   9) 软件缓存(识别已知缓存目录, 保留配置及登录数据)")
 		fmt.Println("  10) 大文件检测(≥500MB, Top20, 只列不删)")
 		fmt.Println("  11) 系统盘压缩(compact LZX, 需管理员, Win10/11)")
 		fmt.Println("  12) 开机自启动管理(可逆禁用/启用 Run 项与启动文件夹)")
@@ -286,7 +288,7 @@ func commsFlow() {
 		fmt.Println("  [0] 只统计，不删除。")
 		return
 	}
-	if !askYesNo(fmt.Sprintf("  确定删除 %d 天前的通讯软件文件吗？", days), false) {
+	if !askYesNo(fmt.Sprintf("  确定删除 %d 天前的通讯旧文件吗（附件不可恢复，可能无法再次查看）？", days), false) {
 		fmt.Println("  已取消，未删除任何通讯文件。")
 		return
 	}
@@ -345,7 +347,7 @@ func printVersion() {
 
 func printHelp() {
 	fmt.Println("Win 盘清理工具  v" + version)
-	fmt.Println("  安全清理 Windows C 盘垃圾，零安装、绿色单文件，兼容 Windows 8/10/11。")
+	fmt.Println("  清理 Windows 系统盘垃圾，零安装、绿色单文件，支持 Windows 10/11。")
 	fmt.Println()
 	fmt.Println("用法:")
 	fmt.Println("  直接运行              启动图形界面，缺少 WebView2 时进入交互菜单")
@@ -370,7 +372,7 @@ func printHelp() {
 	fmt.Println("   5) 清理通讯软件旧文件(可指定 N 天)   6) 查看视频/录屏")
 	fmt.Println("   7) DISM 组件清理(可选进阶)")
 	fmt.Println("   8) 本工具登录自启: 开关登录自启、设倒计时、选普通/深度、关闭下次自启")
-	fmt.Println("   9) AppData 软件缓存: 看大小, 可勾选删除指定软件目录")
+	fmt.Println("   9) 软件缓存: 识别已知缓存目录, 保留配置及登录数据")
 	fmt.Println("  10) 大文件检测: ≥500MB Top20, 只列不删, 可打开所在文件夹")
 	fmt.Println("  11) 系统盘压缩: compact LZX 就地压缩 C:\\Windows, 释放 1-3GB (Win10/11, 可逆)")
 	fmt.Println("  12) 开机自启动管理: 可逆禁用/启用 注册表 Run/RunOnce 与启动文件夹(非本工具自启)")

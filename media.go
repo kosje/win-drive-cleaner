@@ -34,12 +34,17 @@ func mediaRoots() []string {
 	return uniqueStrings(roots)
 }
 
-// scanMedia 收集所有候选视频文件（不递归进子目录太多层，避免慢）。
+// scanMedia 递归收集常见目录中的候选视频文件，跳过 reparse point。
 func scanMedia() []MediaEntry {
+	out, _ := scanMediaControlled(nil)
+	return out
+}
+
+func scanMediaControlled(control *scanControl) ([]MediaEntry, error) {
 	var out []MediaEntry
+	defer control.flush()
 	for _, root := range mediaRoots() {
-		// 仅扫描该根目录两层，控制耗时
-		safeWalk(root, func(p string, info os.FileInfo, err error) error {
+		err := control.walk(root, func(p string, info os.FileInfo, err error) error {
 			if err != nil || info == nil {
 				return nil
 			}
@@ -53,10 +58,13 @@ func scanMedia() []MediaEntry {
 			out = append(out, MediaEntry{Path: p, Size: info.Size()})
 			return nil
 		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	// 按大小降序
 	sort.Slice(out, func(i, j int) bool { return out[i].Size > out[j].Size })
-	return out
+	return out, control.check()
 }
 
 // printMediaScan 提示候选视频/录屏文件（Top N），并说明可打开所在文件夹手动清理。
