@@ -88,6 +88,17 @@ func elevationArgs(original, extra []string) []string {
 	return append(args, "--elevated")
 }
 
+func guiElevationArgs(deep, dry bool) []string {
+	args := []string{"--gui"}
+	if deep {
+		args = append(args, "--deep")
+	}
+	if dry {
+		args = append(args, "--dry-run")
+	}
+	return args
+}
+
 // quoteArgs 把参数数组拼成命令行字符串，含空格的参数加引号。
 func quoteArgs(args []string) string {
 	out := make([]string, 0, len(args))

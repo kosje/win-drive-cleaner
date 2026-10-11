@@ -38,6 +38,7 @@ func apiDiskInfo() (map[string]interface{}, error) {
 		"admin":       isAdmin(),
 		"compactable": compactSupported(),
 		"systemDrive": systemDrive(),
+		"logDir":      logDir(),
 	}, nil
 }
 
@@ -78,7 +79,8 @@ func apiStartupToggle(id string, on bool) (map[string]interface{}, error) {
 	for i := range items {
 		if items[i].ID == id {
 			res := setValueEnabled(&items[i], on)
-			return map[string]interface{}{"ok": res.OK, "msg": res.Msg, "error": res.Error}, nil
+			return map[string]interface{}{"ok": res.OK, "msg": res.Msg, "error": res.Error,
+				"id": items[i].ID, "target": items[i].Target}, nil
 		}
 	}
 	return map[string]interface{}{"ok": false, "error": "未找到该自启项"}, nil
@@ -133,11 +135,11 @@ func apiCancelClean() (map[string]interface{}, error) {
 }
 
 // apiElevate 以管理员身份重新拉起本工具的 GUI（用于深度清理 / DISM / 压缩）。
-func apiElevate() (map[string]interface{}, error) {
+func apiElevate(deep, dry bool) (map[string]interface{}, error) {
 	if isAdmin() {
 		return map[string]interface{}{"ok": false, "msg": "当前已是管理员"}, nil
 	}
-	if err := elevateSelfWithArgs("--gui"); err != nil {
+	if err := elevateSelfWithArgs(guiElevationArgs(deep, dry)...); err != nil {
 		return map[string]interface{}{"ok": false, "msg": err.Error()}, nil
 	}
 	return map[string]interface{}{"ok": true, "msg": "已请求管理员权限，新窗口将打开；请关闭本窗口。"}, nil
@@ -404,5 +406,14 @@ func apiOpenFolder(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("路径为空")
 	}
+	if samePath(expandWindowsEnv(path), logDir()) {
+		if err := ensureLogDir(); err != nil {
+			return err
+		}
+	}
 	return OpenInExplorer(path)
+}
+
+func ensureLogDir() error {
+	return os.MkdirAll(logDir(), 0755)
 }

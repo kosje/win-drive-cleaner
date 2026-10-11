@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -262,8 +263,8 @@ func listStartupFolder(src StartupSource, dir string) []StartupEntry {
 			continue
 		}
 		fn := e.Name()
-		disabled := strings.HasSuffix(fn, startupDisabledSuffix)
-		display := strings.TrimSuffix(fn, startupDisabledSuffix)
+		disabled := strings.HasSuffix(strings.ToLower(fn), startupDisabledSuffix)
+		display := filepath.Base(startupFolderPath(fn, true))
 		ext := strings.ToLower(filepath.Ext(display))
 		if ext != ".lnk" && ext != ".url" && ext != ".cmd" && ext != ".bat" && ext != ".com" && ext != ".exe" {
 			continue
@@ -282,28 +283,44 @@ func listStartupFolder(src StartupSource, dir string) []StartupEntry {
 
 // setStartupFolderEnabled 开/关一个启动文件夹里的快捷方式（改名加/去后缀，可逆）。
 func setStartupFolderEnabled(src StartupSource, full string, on bool) StartupResult {
-	dir := filepath.Dir(full)
-	orig := filepath.Base(full)
-	switch {
-	case on:
-		if !strings.HasSuffix(orig, startupDisabledSuffix) {
-			return StartupResult{OK: true, Msg: "已启用（该启动项本未禁用）"}
-		}
-		restore := filepath.Join(dir, strings.TrimSuffix(orig, startupDisabledSuffix))
-		if err := os.Rename(full, restore); err != nil {
-			return StartupResult{OK: false, Error: fmt.Sprintf("恢复失败: %v", err)}
-		}
-		return StartupResult{OK: true, Msg: "已启用"}
-	default:
-		if strings.HasSuffix(orig, startupDisabledSuffix) {
-			return StartupResult{OK: true, Msg: "已禁用（本就已禁用）"}
-		}
-		disable := filepath.Join(dir, orig+startupDisabledSuffix)
-		if err := os.Rename(full, disable); err != nil {
-			return StartupResult{OK: false, Error: fmt.Sprintf("禁用失败: %v", err)}
-		}
-		return StartupResult{OK: true, Msg: "已禁用（可恢复）"}
+	if (src != StartupFolderUser && src != StartupFolderCommon) || hasReparseAncestor(full) {
+		return StartupResult{Error: "启动文件路径无效或包含目录联接"}
 	}
+	info, err := os.Lstat(full)
+	if err != nil || !info.Mode().IsRegular() {
+		return StartupResult{Error: "启动文件不存在或不是普通文件"}
+	}
+	target := startupFolderPath(full, on)
+	if !samePath(full, target) {
+		from, err := windows.UTF16PtrFromString(full)
+		if err != nil {
+			return StartupResult{Error: err.Error()}
+		}
+		to, err := windows.UTF16PtrFromString(target)
+		if err != nil {
+			return StartupResult{Error: err.Error()}
+		}
+		// No REPLACE_EXISTING: never overwrite a shortcut installed meanwhile.
+		if err := windows.MoveFileEx(from, to, 0); err != nil {
+			return StartupResult{Error: fmt.Sprintf("修改启动文件失败（同名目标不会覆盖）: %v", err)}
+		}
+	}
+	msg := "已禁用（可恢复）"
+	if on {
+		msg = "已启用"
+	}
+	return StartupResult{OK: true, Msg: msg}
+}
+
+func startupFolderPath(full string, on bool) string {
+	disabled := strings.HasSuffix(strings.ToLower(full), startupDisabledSuffix)
+	if on && disabled {
+		return full[:len(full)-len(startupDisabledSuffix)]
+	}
+	if !on && !disabled {
+		return full + startupDisabledSuffix
+	}
+	return full
 }
 
 // ---------- 对外统一接口（供 CLI/GUI 调用） ----------
@@ -340,7 +357,12 @@ func setValueEnabled(e *StartupEntry, on bool) StartupResult {
 		loc, _ := resolveRegLoc(e.Source)
 		return setRegEnabled(loc, e.Name, on)
 	case e.Source == StartupFolderUser || e.Source == StartupFolderCommon:
-		return setStartupFolderEnabled(e.Source, e.ID, on)
+		res := setStartupFolderEnabled(e.Source, e.ID, on)
+		if res.OK {
+			e.ID = startupFolderPath(e.ID, on)
+			e.Target, e.Enabled = e.ID, on
+		}
+		return res
 	default:
 		return StartupResult{OK: false, Error: "不支持的来源类型"}
 	}

@@ -85,7 +85,7 @@ func (a *guiApp) startAsync(task string, scanning bool, job func(*scanControl) (
 	if a.running == nil {
 		a.running = make(map[string]bool)
 	}
-	mutating := task == "clean" || task == "cacheDelete" || task == "bigfilesDelete" || task == "dism" || task == "compact"
+	mutating := task == "clean" || task == "cacheDelete" || task == "bigfilesDelete" || task == "dism" || task == "compact" || task == "startupToggle"
 	if a.closed.Load() || a.running[task] || (mutating && a.running["mutation"]) {
 		a.mu.Unlock()
 		return nil, fmt.Errorf("操作正在执行或窗口已关闭，请稍后重试")
@@ -157,6 +157,22 @@ func (a *guiApp) close() {
 // runGUI 启动 WebView2 原生窗口并承载图形界面。
 // 返回是否成功启动并运行完 GUI（创建失败返回 false，供调用方回退到交互菜单）。
 func runGUI() bool {
+	return runGUIWithOptions(false, DryRun)
+}
+
+func guiHTMLWithOptions(deep, dry bool) string {
+	html := guiHTML
+	if dry {
+		html = strings.Replace(html, `id="dryRun">`, `id="dryRun" checked>`, 1)
+	}
+	if deep {
+		html = strings.Replace(html, `value="std" checked`, `value="std"`, 1)
+		html = strings.Replace(html, `value="deep">`, `value="deep" checked>`, 1)
+	}
+	return html
+}
+
+func runGUIWithOptions(deep, dry bool) bool {
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug: false,
 		WindowOptions: webview2.WindowOptions{
@@ -183,8 +199,12 @@ func runGUI() bool {
 			return apiDiskInfo()
 		})
 	})
-	_ = w.Bind("apiStartupList", apiStartupList)
-	_ = w.Bind("apiStartupToggle", apiStartupToggle)
+	_ = w.Bind("apiStartupList", func() (map[string]interface{}, error) {
+		return app.async("startupList", func() (interface{}, error) { return apiStartupList() })
+	})
+	_ = w.Bind("apiStartupToggle", func(id string, on bool) (map[string]interface{}, error) {
+		return app.async("startupToggle", func() (interface{}, error) { return apiStartupToggle(id, on) })
+	})
 	_ = w.Bind("apiOpenFolder", func(path string) (map[string]interface{}, error) {
 		return app.async("openFolder", func() (interface{}, error) {
 			return nil, apiOpenFolder(path)
@@ -258,11 +278,7 @@ func runGUI() bool {
 		})
 	})
 
-	html := guiHTML
-	if DryRun {
-		html = strings.Replace(html, `id="dryRun">`, `id="dryRun" checked>`, 1)
-	}
-	w.SetHtml(html)
+	w.SetHtml(guiHTMLWithOptions(deep, dry))
 	w.Run()
 
 	// 消息循环退出 = 窗口已销毁。此后禁止任何 Dispatch/Eval，

@@ -250,7 +250,7 @@
           <h2>删除审计日志</h2>
           <p class="hint">本工具每次删除前都会把「路径 + 大小」写入 <span class="mono">%LOCALAPPDATA%\WinDriveCleaner\CleanerLog_&lt;日期&gt;.txt</span>，可随时核对"到底删了什么"。</p>
           <div class="row">
-            <button class="btn ghost" id="btnLogOpen">打开日志目录</button>
+            <button class="btn ghost" id="btnLogOpen" disabled>打开日志目录</button>
             <button class="btn ghost" id="btnLogRefresh">刷新日志内容</button>
             <span class="muted" id="logPath"></span>
           </div>
@@ -397,6 +397,7 @@ async function loadTop(){
   try{
     var d=await readDiskInfo();
     el("versionLabel").textContent="v"+d.version;
+    if(d.logDir){ logDirPath=d.logDir; el("btnLogOpen").disabled=false; }
     el("adminBadge").textContent=d.admin?"管理员权限":"普通用户";
     el("adminBadge").className="badge "+(d.admin?"ok":"bad");
     el("diskBadge").textContent=(d.systemDrive||"系统盘")+" 剩余 "+fmt(d.free);
@@ -415,10 +416,13 @@ async function loadTop(){
   }catch(e){ el("adminBadge").textContent="权限检测失败"; }
 }
 el("btnElevate").addEventListener("click",async function(){
+  el("btnElevate").disabled=true;
   try{
-    var r=await api.apiElevate();
+    var deep=document.querySelector('input[name=mode][value=deep]').checked;
+    var r=await api.apiElevate(deep,el("dryRun").checked);
     toast(r.msg);
   }catch(e){ toast("提权失败: "+e); }
+  finally{ el("btnElevate").disabled=false; }
 });
 
 async function loadDisk(){
@@ -498,12 +502,21 @@ el("btnCleanStop").addEventListener("click",function(){
 });
 
 /* ---------------- 开机自启 ---------------- */
+var startupPending=false, startupControls=[];
+function setStartupBusy(active){
+  startupPending=active;
+  el("btnStartScan").disabled=active;
+  busy("startBusy",active);
+  startupControls.forEach(function(control){ control.checkbox.disabled=active||!!(control.row.needAdmin||control.row.readOnly); });
+}
 el("btnStartScan").addEventListener("click",function(){ loadStartups(); });
 
 async function loadStartups(){
-  busy("startBusy",true);
+  if(startupPending) return;
+  setStartupBusy(true);
   try{
-    var rows = await api.apiStartupList();
+    var rows = await runTask('startupList',function(){return api.apiStartupList();});
+    startupControls=[];
     var tb=el("startBody"); tb.innerHTML="";
     el("startCount").textContent="共 "+rows.length+" 项";
     if(!rows.length){ emptyRow(tb,5,"未发现开机自启项"); return; }
@@ -513,6 +526,7 @@ async function loadStartups(){
       var tdSw=document.createElement("td");
       var lb=document.createElement("label"); lb.className="sw";
       var cb=document.createElement("input"); cb.type="checkbox"; cb.checked=!!r.enabled;
+      startupControls.push({checkbox:cb,row:r});
       cb.setAttribute("data-id", r.id);           /* 用 setAttribute 而非字符串拼 HTML，杜绝注入 */
       if(r.needAdmin || r.readOnly) cb.disabled=true;
       if(r.readOnly) lb.title="RunOnce 一次性启动项仅供查看";
@@ -520,14 +534,18 @@ async function loadStartups(){
       lb.appendChild(cb); lb.appendChild(tk);
       tdSw.appendChild(lb);
       cb.addEventListener("change",async function(){
+        if(startupPending){ cb.checked=!!r.enabled; return; }
         var id=cb.getAttribute("data-id"), on=cb.checked;
-        cb.disabled=true;
+        setStartupBusy(true);
         try{
-          var res=await api.apiStartupToggle(id,on);
-          if(!res.ok){ toast(res.error||"操作失败"); cb.checked=!on; if(r.needAdmin) cb.disabled=false; }
-          else toast(res.msg);
-        }catch(e){ toast("错误: "+e.message); cb.checked=!on; if(r.needAdmin) cb.disabled=false; }
-        cb.disabled = !!(r.needAdmin || r.readOnly);
+          var res=await runTask('startupToggle',function(){return api.apiStartupToggle(id,on);});
+          if(!res.ok) throw new Error(res.error||"操作失败");
+          r.enabled=on;
+          if(res.id){ r.id=res.id; cb.setAttribute("data-id",res.id); }
+          if(res.target){ r.target=res.target; tdT.textContent=res.target; }
+          toast(res.msg);
+        }catch(e){ toast("错误: "+e.message); cb.checked=!!r.enabled; }
+        finally{ setStartupBusy(false); }
       });
       tr.appendChild(tdSw);
 
@@ -547,7 +565,7 @@ async function loadStartups(){
       b.addEventListener("click",function(){
         var p=r.target||"";
         if(!p.trim()||p.indexOf("://")>=0) return;
-        openFolder(p).catch(function(){});
+        openFolder(p).catch(function(e){toast("打开失败: "+e.message);});
       });
       tdB.appendChild(b); tr.appendChild(tdB);
       tb.appendChild(tr);
@@ -555,7 +573,7 @@ async function loadStartups(){
   }catch(e){
     el("startCount").textContent="读取失败: "+e.message;
   }finally{
-    busy("startBusy",false);
+    setStartupBusy(false);
   }
 }
 
@@ -768,14 +786,14 @@ el("btnCompact").addEventListener("click",function(){
 });
 
 /* ---------------- 清理日志 ---------------- */
-el("btnLogOpen").addEventListener("click",function(){ openFolder(logDir()).catch(function(){}); });
+el("btnLogOpen").addEventListener("click",function(){ openFolder(logDir()).catch(function(e){toast("打开日志目录失败: "+e.message);}); });
 el("btnLogRefresh").addEventListener("click",refreshLog);
 var logDirPath = "%LOCALAPPDATA%\\WinDriveCleaner";
 function logDir(){ return logDirPath; }
 function refreshLog(){
   runTask("readLog", function(){ return api.apiReadLog(); })
     .then(function(r){
-      if(r.dir) logDirPath = r.dir;   /* 以后端返回的真实目录为准，避免依赖环境变量展开 */
+      if(r.dir){ logDirPath = r.dir; el("btnLogOpen").disabled=false; } /* 以后端真实目录为准 */
       el("logPath").textContent = r.file ? (r.file + " · " + r.count + " 行") : "";
       el("logView").textContent = r.content || "（尚无清理日志）";
     })

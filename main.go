@@ -10,7 +10,7 @@ import (
 )
 
 // 版本
-const version = "1.8.1"
+const version = "1.8.2"
 
 // 运行参数（由主流程填充）
 var (
@@ -67,7 +67,7 @@ func main() {
 		manageStartup()
 	case *guiFlag:
 		DryRun = dry
-		if !runGUI() {
+		if !runGUIWithOptions(deep, dry) {
 			inInteractive = true
 			interactive(noUAC)
 		}

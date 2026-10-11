@@ -26,6 +26,8 @@ CLI 可直接运行；GUI 需要 WebView2 Runtime，缺失时自动回退到 CLI
 
 ## 更新日志
 
+- **v1.8.2**：**启动项连续切换修复 + 提权状态保留 + 日志与自启加固**。修复启动文件改名后界面仍使用旧标识的问题，并禁止恢复/禁用时覆盖已有同名文件；启动项查询和切换放到后台执行。提权重启保留当前深度/演练选项，`--gui --deep` 正确初始化界面。登录自启状态结合 StartupApproved 判断，重新开启会清除禁用标记。首次打开日志目录会创建应用自己的目录；日志尾部保留空行、统一 CRLF，避免大日志反复拷贝，并明确报告超大单行读取限制。详见 [审查记录](REVIEW.md)。
+
 - **v1.8.1**：**修复 UAC 取消提示失效 + 日志目录定位加固**。
   - **修复取消 UAC 时的错误提示**：`ShellExecuteW` 通过返回值（而非 errno）报告失败，用户取消 UAC 提权时返回 `SE_ERR_ACCESSDENIED`(5)；原实现误判 `ERROR_CANCELLED`(1223)，导致取消提示退化为泛化的"启动提权进程失败 (code=5)"。现正确识别为"你已取消 UAC 权限请求"，并补充回归测试。
   - **日志目录定位改用后端权威路径**：GUI「打开日志目录」此前硬编码 `%LOCALAPPDATA%` 字面量、依赖后端环境变量展开；现改为采用读取日志时后端返回的真实目录，消除对环境变量展开的隐式依赖。
@@ -140,7 +142,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o W
 
 使用 Node.js 运行 `node --test gui_test.js`，验证 GUI 异步桥接的异常和重复任务处理。
 
-构建完整发布包：`./scripts/package.ps1 -ExpectedVersion v1.8.0`，输出到 `dist/release`，包含两个 EXE、ZIP 和 SHA256SUMS。推送版本标签前需同步 `main.go` 版本、更新日志和 `release/<标签>/NOTES.md`。GitHub Actions 会先执行双架构与竞态测试，再构建发布包并验证 GitHub 附件哈希后正式发布；普通提交和 PR 仅运行检查。
+构建完整发布包：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -ExpectedVersion v1.8.2`，输出到 `dist/release`，包含两个 EXE、ZIP 和 SHA256SUMS；执行策略仅影响这次构建进程。推送版本标签前需同步 `main.go` 版本、更新日志和 `release/<标签>/NOTES.md`。GitHub Actions 会先执行双架构与竞态测试，再构建发布包并验证 GitHub 附件哈希后正式发布；普通提交和 PR 仅运行检查。
 
 可选的真实桌面验证（会临时打开资源管理器，验证后关闭测试窗口）：
 

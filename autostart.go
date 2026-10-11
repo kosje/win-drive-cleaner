@@ -9,15 +9,15 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // 自启动 + 倒计时自动执行。
-// - 注册表 HKCU\...\Run 实现“登录自启”（纯系统 reg.exe，Win8–11 通用，零第三方依赖）
+// - 注册表 HKCU\...\Run 实现登录自启，StartupApproved 控制启用状态
 // - 设置保存在 %LOCALAPPDATA%\WinDriveCleaner\settings.json（倒计时秒数 + 上次清理模式/天数）
 // - --auto 由 Run 键在登录时调用：倒计时后按“上次设置”自动清理，可按键取消
 
 const (
-	regRunKey    = `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`
 	runValueName = `WinDriveCleaner`
 )
 
@@ -111,42 +111,74 @@ func persistSettings(s Settings) bool {
 	return true
 }
 
-// regRun 调用系统自带 reg.exe。
-func regRun(args ...string) (string, error) {
-	out, err := windowsTool("reg.exe", args...).CombinedOutput()
-	return string(out), err
-}
-
 // registerRunKey 开/关 登录自启（HKCU Run 键）。
 func registerRunKey(on bool) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("无法定位自身路径")
 	}
-	if on {
-		data := `"` + exe + `" --auto`
-		_, err := regRun("add", regRunKey, "/v", runValueName, "/t", "REG_SZ", "/d", data, "/f")
-		return err
-	}
-	out, err := regRun("delete", regRunKey, "/v", runValueName, "/f")
-	if err != nil {
-		// 值本就不存在则视为成功
-		if strings.Contains(strings.ToLower(out), "not found") ||
-			strings.Contains(out, "找不到") {
+	return registerSelfStartup(regRunLocations[0], on, quoteArgs([]string{exe, "--auto"}))
+}
+
+func registerSelfStartup(loc regRunLoc, on bool, command string) error {
+	if !on {
+		key, err := registry.OpenKey(loc.hive, loc.regPath, registry.SET_VALUE)
+		if isKeyNotValue(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		defer key.Close()
+		err = key.DeleteValue(runValueName)
+		if isKeyNotValue(err) {
 			return nil
 		}
 		return err
+	}
+	key, _, err := registry.CreateKey(loc.hive, loc.regPath, registry.SET_VALUE|registry.QUERY_VALUE)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	previous, kind, readErr := key.GetStringValue(runValueName)
+	if readErr != nil && !isKeyNotValue(readErr) {
+		return readErr
+	}
+	if err := key.SetStringValue(runValueName, command); err != nil {
+		return err
+	}
+	result := setRegEnabled(loc, runValueName, true)
+	if !result.OK {
+		var rollbackErr error
+		if isKeyNotValue(readErr) {
+			rollbackErr = key.DeleteValue(runValueName)
+		} else if kind == registry.EXPAND_SZ {
+			rollbackErr = key.SetExpandStringValue(runValueName, previous)
+		} else {
+			rollbackErr = key.SetStringValue(runValueName, previous)
+		}
+		if rollbackErr != nil {
+			return fmt.Errorf("无法恢复登录自启: %s；还原注册值失败: %w", result.Error, rollbackErr)
+		}
+		return fmt.Errorf("无法恢复登录自启: %s", result.Error)
 	}
 	return nil
 }
 
 // autostartRegistered 查询当前是否已注册登录自启。
 func autostartRegistered() bool {
-	out, err := regRun("query", regRunKey, "/v", runValueName)
+	return selfStartupRegistered(regRunLocations[0])
+}
+
+func selfStartupRegistered(loc regRunLoc) bool {
+	key, err := registry.OpenKey(loc.hive, loc.regPath, registry.QUERY_VALUE)
 	if err != nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(out), strings.ToLower(runValueName))
+	defer key.Close()
+	command, _, err := key.GetStringValue(runValueName)
+	return err == nil && strings.TrimSpace(command) != "" && isRegEnabled(loc, runValueName)
 }
 
 // describeSettings 返回设置的中文描述。
@@ -160,7 +192,7 @@ func describeSettings(s Settings) string {
 		comms = fmt.Sprintf("%d 天前", s.CommsDays)
 	}
 	return fmt.Sprintf("%s | 自动通讯清理=%s | 倒计时 %d 秒 | 登录自启=%s",
-		mode, comms, s.CountdownSec, onOff(s.Enabled || autostartRegistered()))
+		mode, comms, s.CountdownSec, onOff(autostartRegistered()))
 }
 
 func onOff(b bool) string {
