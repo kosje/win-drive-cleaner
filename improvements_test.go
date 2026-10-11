@@ -78,6 +78,23 @@ func TestShortAliasesRespectProtectedDirectories(t *testing.T) {
 	}
 }
 
+func TestScanFromShortRootStillExcludesProtectedData(t *testing.T) {
+	root := isolatedPaths(t)
+	writeTestFile(t, filepath.Join(root, "User", "large.bin"), strings.Repeat("x", 1<<20))
+	writeTestFile(t, filepath.Join(systemRoot(), "component.bin"), strings.Repeat("x", 1<<20))
+	name, _ := windows.UTF16PtrFromString(root)
+	buf := make([]uint16, 32768)
+	n, err := windows.GetShortPathName(name, &buf[0], uint32(len(buf)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SystemDrive", windows.UTF16ToString(buf[:n]))
+	files := scanBigFiles(1, 20)
+	if len(files) != 1 || !samePath(files[0].Path, filepath.Join(root, "User", "large.bin")) {
+		t.Fatal("short-root scan bypassed protection", files)
+	}
+}
+
 func TestTempMisconfigurationCannotWipeUserRoots(t *testing.T) {
 	isolatedPaths(t)
 	for _, root := range []string{userProfile(), localAppData(), appDataDir(), filepath.Join(userProfile(), "Documents")} {

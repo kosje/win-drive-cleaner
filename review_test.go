@@ -15,7 +15,7 @@ import (
 
 func isolatedPaths(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := resolvedPathOrOriginal(t.TempDir())
 	for key, path := range map[string]string{
 		"SystemDrive": root, "SystemRoot": filepath.Join(root, "Windows"),
 		"LOCALAPPDATA": filepath.Join(root, "Local"), "APPDATA": filepath.Join(root, "Roaming"),

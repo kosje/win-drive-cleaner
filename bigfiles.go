@@ -88,7 +88,7 @@ func scanBigFilesControlled(minMB, top int, control *scanControl) ([]BigFile, er
 		return nil, control.check() // a threshold beyond int64 cannot match any file size
 	}
 	minBytes := int64(minMB) << 20
-	root := systemDrive()
+	root := resolvedPathOrOriginal(systemDrive())
 	exclDirs := bigFileExcludedDirs()
 	exclFiles := bigFileExcludedFiles()
 
