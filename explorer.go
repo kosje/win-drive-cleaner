@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
+	"unsafe"
 )
 
 // OpenInExplorer 用资源管理器打开目标；文件则定位选中，目录则打开。
@@ -15,17 +18,28 @@ import (
 //  1. 先展开路径里的环境变量（%VAR%）并转为绝对路径，避免把
 //     "%LOCALAPPDATA%\..." 字面量交给 explorer（explorer 解析失败不报错，
 //     而是静默打开"文档"目录）。
-//  2. /select 参数必须写成 "/select,<path>"（逗号紧贴路径）——原实现写的是
-//     "/select <path>"（缺逗号），explorer 无法识别，忽略后打开默认"文档"，
-//     这正是"打开按钮都弹文档"的根因。
+//  2. 文件定位使用 SHOpenFolderAndSelectItems，避免 /select 的引号及逗号解析歧义。
 //  3. 路径无效时直接返回错误，不再盲目调用 explorer。
 func OpenInExplorer(path string) error {
-	p := os.ExpandEnv(strings.TrimSpace(path))
-	if p == "" {
-		return fmt.Errorf("路径为空")
+	p, directory, err := explorerTarget(path)
+	if err != nil {
+		return err
 	}
-	if abs, err := filepath.Abs(p); err == nil {
-		p = abs
+	if !directory {
+		return revealInExplorer(p)
+	}
+	cmd := exec.Command("explorer.exe", p)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
+func explorerTarget(path string) (string, bool, error) {
+	p := expandWindowsEnv(strings.TrimSpace(path))
+	if p == "" {
+		return "", false, fmt.Errorf("路径为空")
 	}
 	info, err := os.Lstat(p)
 	if err != nil {
@@ -40,13 +54,52 @@ func OpenInExplorer(path string) error {
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("路径不存在: %s", p)
+		return "", false, fmt.Errorf("路径不存在: %s", p)
 	}
-	if !info.IsDir() {
-		// 文件：选中定位，逗号紧贴路径
-		return exec.Command("explorer.exe", "/select,"+p).Start()
+	p, err = filepath.Abs(p)
+	if err != nil {
+		return "", false, err
 	}
-	return exec.Command("explorer.exe", p).Start()
+	return p, info.IsDir(), nil
+}
+
+var (
+	parseDisplayName    = shell32.NewProc("SHParseDisplayName")
+	openFolderAndSelect = shell32.NewProc("SHOpenFolderAndSelectItems")
+	ole32               = syscall.NewLazyDLL("ole32.dll")
+	coInitialize        = ole32.NewProc("CoInitializeEx")
+	coUninitialize      = ole32.NewProc("CoUninitialize")
+	coTaskMemFree       = ole32.NewProc("CoTaskMemFree")
+)
+
+// Use Shell item IDs instead of Explorer's command-line parser so spaces,
+// commas and Unicode names are passed without quoting ambiguities.
+func revealInExplorer(path string) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hr, _, _ := coInitialize.Call(0, 2)            // COINIT_APARTMENTTHREADED
+	if int32(hr) < 0 && uint32(hr) != 0x80010106 { // already initialized as MTA
+		return fmt.Errorf("初始化资源管理器失败 (HRESULT=0x%08x)", uint32(hr))
+	}
+	if int32(hr) >= 0 {
+		defer coUninitialize.Call()
+	}
+	name, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	var pidl uintptr
+	hr, _, _ = parseDisplayName.Call(uintptr(unsafe.Pointer(name)), 0, uintptr(unsafe.Pointer(&pidl)), 0, 0)
+	if int32(hr) < 0 {
+		return fmt.Errorf("解析文件路径失败 (HRESULT=0x%08x): %s", uint32(hr), path)
+	}
+	defer coTaskMemFree.Call(pidl)
+	// cidl=0 means open the parent folder and select this fully specified item.
+	hr, _, _ = openFolderAndSelect.Call(pidl, 0, 0, 0)
+	if int32(hr) < 0 {
+		return fmt.Errorf("定位文件失败 (HRESULT=0x%08x): %s", uint32(hr), path)
+	}
+	return nil
 }
 
 // parseExecutableFromCommand 从一段命令行里提取可执行文件路径。
@@ -74,7 +127,7 @@ func parseExecutableFromCommand(cmd string) string {
 	return s
 }
 
-// askInt 读取一个正整数；解析失败或 0 时返回 def。
+// askInt 读取一个非负整数；解析失败时返回 def。
 func askInt(prompt string, def int) int {
 	fmt.Print(prompt)
 	var s string
@@ -84,7 +137,7 @@ func askInt(prompt string, def int) int {
 		return def
 	}
 	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
+	if err != nil || n < 0 {
 		return def
 	}
 	return n

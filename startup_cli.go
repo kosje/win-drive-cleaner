@@ -44,7 +44,10 @@ func manageStartup() {
 	for {
 		fmt.Print("\n  输入: d<序号>禁用 / e<序号>启用 / r重新列表 / a全部禁用 / q返回: ")
 		var c string
-		_, _ = fmt.Scanln(&c)
+		_, err := fmt.Scanln(&c)
+		if err != nil && c == "" {
+			return
+		}
 		c = strings.ToLower(strings.TrimSpace(c))
 		switch {
 		case c == "q" || c == "exit":
@@ -64,7 +67,7 @@ func manageStartup() {
 				continue
 			}
 			it := items[idx-1]
-			if it.Source.isLMHive() && !admin {
+			if it.Source.needsAdmin() && !admin {
 				fmt.Println("  该项属「所有用户(HKLM)」，需以管理员身份运行本工具才能操作。")
 				continue
 			}
@@ -80,7 +83,7 @@ func manageStartup() {
 			// 直接输数字：默认禁用
 			if idx, err := strconv.Atoi(c); err == nil && idx >= 1 && idx <= len(items) {
 				it := items[idx-1]
-				if it.Source.isLMHive() && !admin {
+				if it.Source.needsAdmin() && !admin {
 					fmt.Println("  该项属「所有用户(HKLM)」，需以管理员身份运行本工具才能操作。")
 					continue
 				}
@@ -107,7 +110,7 @@ func refreshStartup(items []StartupEntry, admin bool) {
 			state = "禁用"
 		}
 		tag := ""
-		if it.Source.isLMHive() && !admin {
+		if it.Source.needsAdmin() && !admin {
 			tag = "（需管理员，当前跳过）"
 		} else if it.Source.isLMHive() {
 			tag = "（HKLM）"
@@ -127,7 +130,7 @@ func confirmAllDisable(items []StartupEntry, admin bool) {
 		if !it.Enabled {
 			continue
 		}
-		if it.Source.isLMHive() && !admin {
+		if it.Source.needsAdmin() && !admin {
 			continue // 无权限项跳过
 		}
 		fmt.Printf("  即将禁用: %s  [%s]  确认? (y/n) ", it.Name, it.Source)

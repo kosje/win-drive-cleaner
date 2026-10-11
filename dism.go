@@ -105,7 +105,7 @@ func PackLeftovers() (string, int, error) {
 	}
 	var keep []string
 	for _, root := range roots {
-		filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		safeWalk(root, func(p string, info os.FileInfo, err error) error {
 			if err != nil || info == nil || info.IsDir() {
 				return nil
 			}

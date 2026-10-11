@@ -10,9 +10,10 @@ import (
 type Mode int
 
 const (
-	ModeFileDelete    Mode = iota // 删除单个文件（不存在则跳过）
-	ModeClearContents            // 清空目录内容（保留目录本身）
-	ModeDeleteTree               // 删除整棵目录树
+	ModeFileDelete     Mode = iota // 删除单个文件（不存在则跳过）
+	ModeClearContents              // 清空目录内容（保留目录本身）
+	ModeDeleteTree                 // 删除整棵目录树
+	ModeThumbnailCache             // 只删除 thumbcache_*.db 文件
 )
 
 // CleanItem 一个可清理目标。
@@ -30,6 +31,7 @@ type Result struct {
 	Deleted int
 	Bytes   int64 // 实际删除字节（dry-run 时为估算）
 	Errors  int
+	dryRun  bool
 }
 
 // DryRun 控制是否真正删除。
@@ -54,9 +56,8 @@ func standardItems() []CleanItem {
 	return []CleanItem{
 		{Name: "Windows 临时文件", Path: systemRoot() + "\\Temp", Mode: ModeClearContents, Deep: false},
 		{Name: "用户临时文件", Path: userTemp(), Mode: ModeClearContents, Deep: false},
-		{Name: "系统预读(Prefetch)", Path: filepath.Join(systemDrive(), "Prefetch"), Mode: ModeDeleteTree, Deep: false},
-		{Name: "缩略图缓存", Path: filepath.Join(localAppData(), "Microsoft", "Windows", "Explorer"), Mode: ModeClearContents, Deep: false},
-		{Name: "DNS 解析缓存目录", Path: filepath.Join(systemRoot(), "System32", "DnsCache"), Mode: ModeDeleteTree, Deep: false},
+		{Name: "系统预读(Prefetch)", Path: filepath.Join(systemRoot(), "Prefetch"), Mode: ModeClearContents, Deep: false},
+		{Name: "缩略图缓存", Path: filepath.Join(localAppData(), "Microsoft", "Windows", "Explorer"), Mode: ModeThumbnailCache, Deep: false},
 		{Name: "Windows 更新下载缓存", Path: filepath.Join(systemRoot(), "SoftwareDistribution", "Download"), Mode: ModeClearContents, Deep: false},
 		{Name: "应用崩溃报告(WER)", Path: filepath.Join(allUsersProfile(), "Microsoft", "Windows", "WER"), Mode: ModeClearContents, Deep: false},
 	}
@@ -66,9 +67,7 @@ func standardItems() []CleanItem {
 func deepItems() []CleanItem {
 	cats := []CleanItem{
 		{Name: "回收站(系统盘)", Path: recycleBin(), Mode: ModeDeleteTree, Deep: true},
-		{Name: "系统级临时文件", Path: filepath.Join(systemRoot(), "Temp"), Mode: ModeClearContents, Deep: true},
 		{Name: "系统盘根目录临时", Path: filepath.Join(systemDrive(), "Temp"), Mode: ModeClearContents, Deep: true},
-		{Name: "WinSxS 旧组件目录", Path: filepath.Join(systemRoot(), "WinSxS", "Backup"), Mode: ModeDeleteTree, Deep: true},
 		{Name: "旧系统备份(Windows.old)", Path: windowsOld(), Mode: ModeDeleteTree, Deep: true},
 	}
 	return cats
@@ -80,15 +79,41 @@ func collectItems(includeDeep bool) []CleanItem {
 	if includeDeep {
 		items = append(items, deepItems()...)
 	}
-	return items
+	unique := make([]CleanItem, 0, len(items))
+	for _, item := range items {
+		duplicate := false
+		for _, previous := range unique {
+			if samePath(item.Path, previous.Path) && item.Mode == previous.Mode {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			unique = append(unique, item)
+		}
+	}
+	return unique
 }
 
 // cleanItem 执行单个条目。
 func cleanItem(it CleanItem) *Result {
-	res := &Result{Name: it.Name, Path: it.Path}
+	return cleanItemWithDryRun(it, DryRun)
+}
+
+func cleanItemWithDryRun(it CleanItem, dry bool) *Result {
+	res := &Result{Name: it.Name, Path: it.Path, dryRun: dry}
 	pi, err := os.Lstat(it.Path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			res.Errors++
+		}
 		return res // 不存在：正常跳过
+	}
+	if hasReparseAncestor(it.Path) || samePath(it.Path, filepath.Dir(it.Path)) ||
+		samePath(it.Path, systemRoot()) || pathWithin(it.Path, filepath.Join(systemRoot(), "WinSxS")) ||
+		pathWithin(it.Path, filepath.Join(systemRoot(), "System32")) {
+		res.Errors++
+		return res
 	}
 	switch {
 	case pi.IsDir():
@@ -97,8 +122,20 @@ func cleanItem(it CleanItem) *Result {
 			res.deleteTree(it.Path)
 		case ModeClearContents:
 			res.clearContents(it.Path)
+		case ModeThumbnailCache:
+			entries, err := os.ReadDir(it.Path)
+			if err != nil {
+				res.Errors++
+				break
+			}
+			for _, entry := range entries {
+				matched, _ := filepath.Match("thumbcache_*.db", entry.Name())
+				if matched && !entry.IsDir() {
+					res.deleteTree(filepath.Join(it.Path, entry.Name()))
+				}
+			}
 		default:
-			res.clearContents(it.Path)
+			res.Errors++
 		}
 	default:
 		res.deleteFile(it.Path, pi.Size())
@@ -107,7 +144,13 @@ func cleanItem(it CleanItem) *Result {
 }
 
 func (r *Result) deleteFile(path string, size int64) {
-	if DryRun {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || hasReparseAncestor(path) {
+		r.Errors++
+		return
+	}
+	size = info.Size()
+	if r.dryRun {
 		r.Deleted++
 		r.Bytes += size
 		return
@@ -123,6 +166,10 @@ func (r *Result) deleteFile(path string, size int64) {
 }
 
 func (r *Result) clearContents(dir string) {
+	if hasReparseAncestor(dir) {
+		r.Errors++
+		return
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		r.Errors++
@@ -130,45 +177,44 @@ func (r *Result) clearContents(dir string) {
 	}
 	for _, e := range entries {
 		full := filepath.Join(dir, e.Name())
-		if e.IsDir() {
-			r.deleteTree(full)
-		} else {
-			pi, err := os.Lstat(full)
-			if err != nil {
-				continue
-			}
-			r.deleteFile(full, pi.Size())
-		}
+		r.deleteTree(full)
 	}
 }
 
 func (r *Result) deleteTree(dir string) {
-	if DryRun {
-		n, b := walkSize(dir)
-		r.Deleted += int(n)
-		r.Bytes += b
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			r.Errors++
+		}
 		return
 	}
-	// 删前先估算总大小并记日志（可追溯）
-	_, beforeBytes := walkSize(dir)
-	logDeletion(dir, beforeBytes)
-	// 先尝试直接整删；失败多因文件占用，退化为清空内容
-	if err := os.RemoveAll(dir); err == nil {
-		r.Deleted++
-		r.Bytes += beforeBytes
+	if hasReparseAncestor(dir) {
+		r.Errors++
 		return
 	}
+	if !info.IsDir() {
+		r.deleteFile(dir, info.Size())
+		return
+	}
+	// Delete bottom-up, counting only successful removals. RemoveAll can
+	// partially succeed, making a subsequent size estimate overcount bytes.
 	r.clearContents(dir)
-	// 整删失败退化为清空内容时，统计实际清空量并补充日志
-	after, _ := walkSize(dir)
-	if removed := beforeBytes - after; removed > 0 {
-		r.Bytes += removed
+	if r.dryRun {
+		r.Deleted++
+		return
 	}
+	logDeletion(dir, 0)
+	if err := os.Remove(dir); err != nil {
+		r.Errors++
+		return
+	}
+	r.Deleted++
 }
 
 func walkSize(root string) (int64, int64) {
 	var count, bytes int64
-	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	safeWalk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -189,14 +235,21 @@ var OnProgress func(seq int, total int, it CleanItem, res *Result)
 // 每项**做完之后**检查中止标志：保证不会在删除一半的目录中途收手。
 func runItems(includeDeep bool) []*Result {
 	ResetCleanCancel()
+	return runItemsWithOptions(includeDeep, DryRun, OnProgress)
+}
+
+func runItemsWithOptions(includeDeep, dry bool, progress func(int, int, CleanItem, *Result)) []*Result {
 	items := collectItems(includeDeep)
 	out := make([]*Result, 0, len(items))
 	total := len(items)
 	for i, it := range items {
-		res := cleanItem(it)
+		if CleanCancelled() {
+			break
+		}
+		res := cleanItemWithDryRun(it, dry)
 		out = append(out, res)
-		if OnProgress != nil {
-			OnProgress(i+1, total, it, res)
+		if progress != nil {
+			progress(i+1, total, it, res)
 		}
 		if CleanCancelled() {
 			// 已完成当前项，安全停下；剩余项不执行

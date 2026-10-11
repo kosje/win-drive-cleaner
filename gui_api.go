@@ -32,11 +32,11 @@ func diskUsage() (free, total int64) {
 func apiDiskInfo() (map[string]interface{}, error) {
 	free, total := diskUsage()
 	return map[string]interface{}{
-		"free":         free,
-		"total":        total,
-		"admin":        isAdmin(),
-		"compactable":  compactSupported(),
-		"systemDrive":  systemDrive(),
+		"free":        free,
+		"total":       total,
+		"admin":       isAdmin(),
+		"compactable": compactSupported(),
+		"systemDrive": systemDrive(),
 	}, nil
 }
 
@@ -54,7 +54,8 @@ func apiStartupList() ([]map[string]interface{}, error) {
 			"target":    e.Target,
 			"source":    e.Source.String(),
 			"enabled":   e.Enabled,
-			"needAdmin": e.Source.isLMHive() && !admin,
+			"needAdmin": e.Source.needsAdmin() && !admin,
+			"readOnly":  e.Source.isRunOnce(),
 		})
 	}
 	return out, nil
@@ -86,13 +87,9 @@ func apiStartupToggle(id string, on bool) (map[string]interface{}, error) {
 
 // runCleanJob 执行一次磁盘清理，逐项把进度推给前端。
 func runCleanJob(app *guiApp, deep, dry bool) (interface{}, error) {
-	ResetCleanCancel()
-	DryRun = dry
-
 	freeBefore := freeSpaceOnSystemDrive()
-	cancelled := false
 
-	OnProgress = func(seq, total int, it CleanItem, res *Result) {
+	progress := func(seq, total int, it CleanItem, res *Result) {
 		app.pushResult("cleanProgress", map[string]interface{}{
 			"seq":     seq,
 			"total":   total,
@@ -101,12 +98,11 @@ func runCleanJob(app *guiApp, deep, dry bool) (interface{}, error) {
 			"deleted": res.Deleted,
 			"bytes":   res.Bytes,
 			"errors":  res.Errors,
+			"dry":     dry,
 		}, nil)
-		cancelled = CleanCancelled()
 	}
 
-	results := runItems(deep)
-	OnProgress = nil
+	results := runItemsWithOptions(deep, dry, progress)
 
 	deleted, errs, bytes := totalsOf(results)
 	freeAfter := freeSpaceOnSystemDrive()
@@ -122,7 +118,7 @@ func runCleanJob(app *guiApp, deep, dry bool) (interface{}, error) {
 		"bytes":      bytes,
 		"dry":        dry,
 		"deep":       deep,
-		"cancelled":  cancelled,
+		"cancelled":  CleanCancelled(),
 		"freeBefore": freeBefore,
 		"freeAfter":  freeAfter,
 		"actualGain": actual,
@@ -206,7 +202,7 @@ func isCacheDeletable(path string) bool {
 	for _, root := range cacheRoots() {
 		rootClean := filepath.Clean(root)
 		// 只接受根目录的**直接子目录**，杜绝 "..\\..\\Windows" 之类的穿越
-		if filepath.Dir(clean) != rootClean {
+		if !samePath(filepath.Dir(clean), rootClean) {
 			continue
 		}
 		name := filepath.Base(clean)
@@ -216,7 +212,8 @@ func isCacheDeletable(path string) bool {
 		if isSystemCacheDir(name) {
 			return false
 		}
-		return true
+		info, err := os.Lstat(clean)
+		return err == nil && info.IsDir() && !hasReparseAncestor(clean)
 	}
 	return false
 }
@@ -241,7 +238,7 @@ func deleteCacheJob(paths []string) (interface{}, error) {
 		// 去重
 		dup := false
 		for _, e := range cleaned {
-			if e == c {
+			if samePath(e, c) {
 				dup = true
 				break
 			}
@@ -257,22 +254,17 @@ func deleteCacheJob(paths []string) (interface{}, error) {
 	items := make([]map[string]interface{}, 0, len(cleaned))
 
 	for _, p := range cleaned {
-		size := int64(0)
-		_, size = walkSize(p)
-		// 删前写审计日志（与 CLI 路径保持一致，可追溯）
-		logDeletion(p, size)
-
 		res := &Result{Name: "软件缓存", Path: p}
 		res.deleteTree(p)
 		deleted += res.Deleted
 		errs += res.Errors
 		freed += res.Bytes
 		items = append(items, map[string]interface{}{
-			"path":     p,
-			"name":     filepath.Base(p),
-			"bytes":    res.Bytes,
-			"deleted":  res.Deleted,
-			"errors":   res.Errors,
+			"path":    p,
+			"name":    filepath.Base(p),
+			"bytes":   res.Bytes,
+			"deleted": res.Deleted,
+			"errors":  res.Errors,
 		})
 	}
 
@@ -316,7 +308,7 @@ func deleteBigFilesJob(paths []string) (interface{}, error) {
 		c := filepath.Clean(p)
 		dup := false
 		for _, e := range cleaned {
-			if e == c {
+			if samePath(e, c) {
 				dup = true
 				break
 			}
@@ -335,15 +327,8 @@ func deleteBigFilesJob(paths []string) (interface{}, error) {
 		if st, err := os.Stat(p); err == nil {
 			size = st.Size()
 		}
-		logDeletion(p, size)
-
 		res := &Result{Name: "大文件", Path: p}
-		if DryRun {
-			res.Deleted = 1
-			res.Bytes = size
-		} else {
-			res.deleteFile(p, size)
-		}
+		res.deleteFile(p, size)
 		deleted += res.Deleted
 		errs += res.Errors
 		freed += res.Bytes
@@ -404,21 +389,14 @@ func apiReadLog(lines int) (map[string]interface{}, error) {
 			}
 		}
 	}
-	data, err := os.ReadFile(latest)
+	f, err := os.Open(latest)
 	if err != nil {
 		return nil, err
 	}
-	content := string(data)
-	// 截取尾部若干行
-	rows := strings.Split(content, "\n")
-	tail := 0
-	for i := len(rows) - 1; i >= 0 && tail < lines; i-- {
-		if strings.TrimSpace(rows[i]) != "" {
-			tail++
-		}
-	}
-	if tail < len(rows) {
-		content = strings.Join(rows[len(rows)-tail:], "\n")
+	defer f.Close()
+	content, tail, err := readLogTail(f, lines)
+	if err != nil {
+		return nil, err
 	}
 	return map[string]interface{}{
 		"dir":     dir,

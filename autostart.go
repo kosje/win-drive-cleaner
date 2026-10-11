@@ -16,7 +16,7 @@ import (
 // - --auto 由 Run 键在登录时调用：倒计时后按“上次设置”自动清理，可按键取消
 
 const (
-	regRunKey   = `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`
+	regRunKey    = `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`
 	runValueName = `WinDriveCleaner`
 )
 
@@ -105,8 +105,7 @@ func autostartRegistered() bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(out), "winDriveCleaner") ||
-		strings.Contains(out, runValueName)
+	return strings.Contains(strings.ToLower(out), strings.ToLower(runValueName))
 }
 
 // describeSettings 返回设置的中文描述。
@@ -143,7 +142,9 @@ func runAutoFlow() {
 	}
 
 	DryRun = false
-	execute(s.Deep, false) // 深度清理时内部自动 UAC 提权
+	if !execute(s.Deep, noUAC) { // 提权子进程接管，父进程不重复清理通讯文件
+		return
+	}
 	if lastCommsDays > 0 {
 		commsAutoDelete(lastCommsDays)
 	}

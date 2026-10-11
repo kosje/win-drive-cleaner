@@ -11,21 +11,18 @@ var (
 	diskFreeEx = kernel32.NewProc("GetDiskFreeSpaceExW")
 )
 
-type ularge struct{ low, high uint32 }
-
 // freeSpaceOnSystemDrive 返回系统盘当前可用空间（字节）。失败返回 -1。
 func freeSpaceOnSystemDrive() int64 {
 	path := syscall.StringToUTF16Ptr(systemDrive())
-	var total, avail, free ularge
+	var available, total, free uint64
 	ret, _, _ := diskFreeEx.Call(
 		uintptr(unsafe.Pointer(path)),
+		uintptr(unsafe.Pointer(&available)),
 		uintptr(unsafe.Pointer(&total)),
-		uintptr(unsafe.Pointer(&avail)),
 		uintptr(unsafe.Pointer(&free)),
 	)
 	if ret == 0 {
 		return -1
 	}
-	// 可用空间 = avail（Low + High<<32）
-	return int64(avail.low) | int64(avail.high)<<32
+	return int64(available)
 }

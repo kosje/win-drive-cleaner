@@ -10,7 +10,7 @@ import (
 
 // CommsTarget 一个通讯软件的本地文件/缓存目录。
 type CommsTarget struct {
-	Name string
+	Name  string
 	Roots []string // 可能存在多个位置
 }
 
@@ -63,7 +63,10 @@ func commsSizeOlder(t CommsTarget, days int) (int64, int, bool) {
 	found := false
 	cutoff := time.Now().AddDate(0, 0, -days)
 	for _, root := range t.Roots {
-		filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if info, err := os.Stat(root); err == nil && info.IsDir() {
+			found = true
+		}
+		safeWalk(root, func(p string, info os.FileInfo, err error) error {
 			if err != nil || info == nil {
 				return nil
 			}
@@ -73,7 +76,6 @@ func commsSizeOlder(t CommsTarget, days int) (int64, int, bool) {
 			if info.ModTime().Before(cutoff) {
 				total += info.Size()
 				count++
-				found = true
 			}
 			return nil
 		})
@@ -86,7 +88,7 @@ func deleteCommsOlder(t CommsTarget, days int) (int64, int64, int64) {
 	var bytes, count, errs int64
 	cutoff := time.Now().AddDate(0, 0, -days)
 	for _, root := range t.Roots {
-		filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		safeWalk(root, func(p string, info os.FileInfo, err error) error {
 			if err != nil || info == nil || info.IsDir() {
 				return nil
 			}

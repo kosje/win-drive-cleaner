@@ -38,11 +38,12 @@ func scanCache(minBytes int64) []CacheEntry {
 				continue
 			}
 			name := e.Name()
-			if seen[name] {
+			p := filepath.Join(root, name)
+			key := strings.ToLower(filepath.Clean(p))
+			if seen[key] || hasReparseAncestor(p) {
 				continue
 			}
-			seen[name] = true
-			p := filepath.Join(root, name)
+			seen[key] = true
 			// 跳过系统关键目录
 			if isSystemCacheDir(name) {
 				continue
@@ -69,7 +70,7 @@ func isSystemCacheDir(name string) bool {
 	low := strings.ToLower(name)
 	switch low {
 	case "microsoft", "packages", "microsoft edge", "msedge", "google",
-		"kaspersky", "endpoint protection", "one drive", "windows", "temp":
+		"kaspersky", "endpoint protection", "one drive", "onedrive", "windows", "temp", "windrivecleaner":
 		// 系统/核心/已单独处理目录，不让用户误删
 		return true
 	}
@@ -91,6 +92,10 @@ func printCacheScan(top int) {
 	if len(list) > top {
 		list = list[:top]
 	}
+	printCacheEntries(list)
+}
+
+func printCacheEntries(list []CacheEntry) {
 	for i, e := range list {
 		fmt.Printf("  M%02d  %-16s %10s  %s\n", i+1, e.Software, formatBytes(e.Bytes), e.Path)
 	}
@@ -102,7 +107,7 @@ var cacheIndex []CacheEntry
 
 // cacheFlow 交互流程：扫描显示 → 用户输入要删的 M 序号（逗号/空格分隔）→ 逐个确认删除。
 func cacheFlow() {
-	printCacheScan(0)
+	DryRun = false
 	cacheIndex = scanCache(10 << 20)
 	if len(cacheIndex) > 15 {
 		cacheIndex = cacheIndex[:15]
@@ -111,19 +116,24 @@ func cacheFlow() {
 		return
 	}
 	for {
+		printCacheEntries(cacheIndex)
 		fmt.Println()
 		fmt.Print("  输入要删除的 M 序号(如 1,3,5 或 m1 m3，q=返回): ")
-		var c string
-		_, _ = fmt.Scanln(&c)
-		c = trimLower(c)
+		c, err := readInputLine()
+		if err != nil {
+			return
+		}
+		c = strings.ToLower(strings.TrimSpace(c))
 		if c == "q" || c == "" {
 			return
 		}
 		ids := parseInts(c)
 		var valid []int
+		seen := map[int]bool{}
 		for _, id := range ids {
-			if id >= 1 && id <= len(cacheIndex) {
+			if id >= 1 && id <= len(cacheIndex) && !seen[id] {
 				valid = append(valid, id)
+				seen[id] = true
 			}
 		}
 		if len(valid) == 0 {
@@ -145,8 +155,10 @@ func cacheFlow() {
 		}
 		for _, id := range valid {
 			e := cacheIndex[id-1]
-			// 删前先记日志
-			logDeletion(e.Path, e.Bytes)
+			if !isCacheDeletable(e.Path) {
+				fmt.Printf("   路径已失效，跳过: %s\n", e.Path)
+				continue
+			}
 			res := &Result{Name: "软件缓存", Path: e.Path}
 			res.deleteTree(e.Path)
 			note := ""

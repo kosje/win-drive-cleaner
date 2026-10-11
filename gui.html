@@ -124,7 +124,7 @@
             <label class="chk"><input type="radio" name="mode" value="deep"> 深度清理（需管理员）</label>
             <label class="chk"><input type="checkbox" id="dryRun"> 演练模式（只统计不删除）</label>
           </div>
-          <p class="hint">普通清理覆盖临时文件/预读/缩略图/更新缓存等；深度清理额外含回收站、WinSxS 备份、Windows.old 等。建议先跑演练模式看清要动哪些。</p>
+          <p class="hint">普通清理覆盖临时文件/预读/缩略图/更新缓存等；深度清理额外含回收站、系统盘临时目录、Windows.old 等。建议先跑演练模式看清要动哪些。</p>
           <div class="row">
             <button class="btn" id="btnClean">开始清理</button>
             <button class="btn warn" id="btnCleanStop" disabled>停止</button>
@@ -305,12 +305,20 @@ window.__wdcResult = function(task, payload){
 };
 /* 触发一次异步任务：先注册等待者，再调后端，避免竞态丢结果 */
 function runTask(task, invoke){
+	if(WAITERS[task]) return Promise.reject(new Error("该操作正在执行，请稍后重试"));
   var p = expect(task);
-  Promise.resolve(invoke()).catch(function(e){
-    if(WAITERS[task]){ delete WAITERS[task]; }
-    throw e;
+  var waiter = WAITERS[task];
+  Promise.resolve().then(invoke).catch(function(e){
+    if(WAITERS[task]===waiter){
+      delete WAITERS[task];
+      waiter.reject(e);
+    }
   });
   return p;
+}
+
+function openFolder(path){
+  return runTask('openFolder', function(){ return api.apiOpenFolder(path); });
 }
 
 /* ---------------- 导航 ---------------- */
@@ -395,7 +403,7 @@ el("btnClean").addEventListener("click",function(){
 /* 进度由后端以 task="cleanProgress" 推送，见上方 __wdcResult 分支 */
 function renderCleanProgress(p){
   if(!p) return;
-  var verb = (p.deleted>0||p.bytes>0) ? "已清理" : (p.errors>0 ? "部分受限" : "跳过");
+  var verb = p.dry ? "预计" : ((p.deleted>0||p.bytes>0) ? "已清理" : (p.errors>0 ? "部分受限" : "跳过"));
   logLine("["+p.seq+"/"+p.total+"] "+p.name+"  →  "+verb+"  "+fmt(p.bytes)+
           (p.errors?("  !失败"+p.errors):""));
   logLine("           └ "+p.path);
@@ -446,7 +454,8 @@ async function loadStartups(){
       var lb=document.createElement("label"); lb.className="sw";
       var cb=document.createElement("input"); cb.type="checkbox"; cb.checked=!!r.enabled;
       cb.setAttribute("data-id", r.id);           /* 用 setAttribute 而非字符串拼 HTML，杜绝注入 */
-      if(r.needAdmin) cb.disabled=true;
+      if(r.needAdmin || r.readOnly) cb.disabled=true;
+      if(r.readOnly) lb.title="RunOnce 一次性启动项仅供查看";
       var tk=document.createElement("span"); tk.className="tk";
       lb.appendChild(cb); lb.appendChild(tk);
       tdSw.appendChild(lb);
@@ -458,7 +467,7 @@ async function loadStartups(){
           if(!res.ok){ toast(res.error||"操作失败"); cb.checked=!on; if(r.needAdmin) cb.disabled=false; }
           else toast(res.msg);
         }catch(e){ toast("错误: "+e.message); cb.checked=!on; if(r.needAdmin) cb.disabled=false; }
-        cb.disabled = !!r.needAdmin;
+        cb.disabled = !!(r.needAdmin || r.readOnly);
       });
       tr.appendChild(tdSw);
 
@@ -467,7 +476,7 @@ async function loadStartups(){
       var tdS=document.createElement("td");
       var pill=document.createElement("span");
       pill.className="pill"+(r.needAdmin?" grey":"");
-      pill.textContent=r.source+(r.needAdmin?" · 需管理员":"");
+      pill.textContent=r.source+(r.needAdmin?" · 需管理员":"")+(r.readOnly?" · 只读":"");
       tdS.appendChild(pill); tr.appendChild(tdS);
 
       var tdT=document.createElement("td"); tdT.className="mono";
@@ -478,7 +487,7 @@ async function loadStartups(){
       b.addEventListener("click",function(){
         var p=r.target||"";
         if(!p.trim()||p.indexOf("://")>=0) return;
-        api.apiOpenFolder(p).catch(function(){});
+        openFolder(p).catch(function(){});
       });
       tdB.appendChild(b); tr.appendChild(tdB);
       tb.appendChild(tr);
@@ -515,7 +524,7 @@ el("btnBig").addEventListener("click",function(){
         var b=document.createElement("td"); b.className="mono"; b.textContent=f.path;
         var c=document.createElement("td");
         var btn=document.createElement("button"); btn.className="btn ghost sm"; btn.textContent="打开";
-        btn.addEventListener("click",function(){ api.apiOpenFolder(f.path).catch(function(){}); });
+        btn.addEventListener("click",function(){ openFolder(f.path).catch(function(e){toast("打开失败: "+e.message);}); });
         c.appendChild(btn);
         tr.appendChild(t0); tr.appendChild(a); tr.appendChild(b); tr.appendChild(c); tb.appendChild(tr);
       });
@@ -614,7 +623,7 @@ el("btnComms").addEventListener("click",function(){
         var btn=document.createElement("button"); btn.className="btn ghost sm"; btn.textContent="打开";
         btn.disabled=!(c.roots&&c.roots.length);
         btn.addEventListener("click",function(){
-          if(c.roots&&c.roots[0]) api.apiOpenFolder(c.roots[0]).catch(function(){});
+          if(c.roots&&c.roots[0]) openFolder(c.roots[0]).catch(function(){});
         });
         e.appendChild(btn);
         tr.appendChild(a); tr.appendChild(b); tr.appendChild(d); tr.appendChild(e); tb.appendChild(tr);
@@ -638,7 +647,7 @@ el("btnMedia").addEventListener("click",function(){
         var b=document.createElement("td"); b.className="mono"; b.textContent=m.path;
         var c=document.createElement("td");
         var btn=document.createElement("button"); btn.className="btn ghost sm"; btn.textContent="打开";
-        btn.addEventListener("click",function(){ api.apiOpenFolder(m.path).catch(function(){}); });
+        btn.addEventListener("click",function(){ openFolder(m.path).catch(function(e){toast("打开失败: "+e.message);}); });
         c.appendChild(btn);
         tr.appendChild(a); tr.appendChild(b); tr.appendChild(c); tb.appendChild(tr);
       });
@@ -678,7 +687,7 @@ el("btnCompact").addEventListener("click",function(){
 });
 
 /* ---------------- 清理日志 ---------------- */
-el("btnLogOpen").addEventListener("click",function(){ api.apiOpenFolder(logDir()).catch(function(){}); });
+el("btnLogOpen").addEventListener("click",function(){ openFolder(logDir()).catch(function(){}); });
 el("btnLogRefresh").addEventListener("click",refreshLog);
 function logDir(){ return "%LOCALAPPDATA%\\WinDriveCleaner"; }
 function refreshLog(){

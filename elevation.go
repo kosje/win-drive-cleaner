@@ -36,30 +36,14 @@ func elevateSelfWithArgs(extraArgs ...string) error {
 		return fmt.Errorf("无法定位自身路径: %w", err)
 	}
 
-	var args []string
-	seen := map[string]bool{"--no-uac": true, "--elevated": true}
-	for _, a := range os.Args[1:] {
-		if a == "--no-uac" || a == "--elevated" {
-			continue
-		}
-		if !seen[a] {
-			seen[a] = true
-			args = append(args, a)
-		}
-	}
-	args = append(args, extraArgs...)
-	args = append(args, "--elevated")
+	args := elevationArgs(os.Args[1:], extraArgs)
 
 	verb := syscall.StringToUTF16Ptr("runas")
 	file := syscall.StringToUTF16Ptr(exe)
 	paramStr := syscall.StringToUTF16Ptr(quoteArgs(args))
 	dir := syscall.StringToUTF16Ptr("")
 
-	const (
-		SE_ERR_OK     = 1
-		SE_ERR_CANCEL = 5
-	)
-	ret, _, _ := shellExecW.Call(
+	ret, _, callErr := shellExecW.Call(
 		0,
 		uintptr(unsafe.Pointer(verb)),
 		uintptr(unsafe.Pointer(file)),
@@ -68,24 +52,43 @@ func elevateSelfWithArgs(extraArgs ...string) error {
 		1, // SW_SHOWNORMAL
 	)
 
-	if ret == uintptr(SE_ERR_CANCEL) {
+	return shellExecuteError(ret, callErr)
+}
+
+func shellExecuteError(ret uintptr, callErr error) error {
+	if ret > 32 {
+		return nil
+	}
+	if callErr == syscall.Errno(1223) {
 		return fmt.Errorf("你已取消 UAC 权限请求")
 	}
-	if ret < uintptr(SE_ERR_OK) {
-		return fmt.Errorf("启动提权进程失败 (code=%d)", ret)
+	return fmt.Errorf("启动提权进程失败 (code=%d): %v", ret, callErr)
+}
+
+func elevationArgs(original, extra []string) []string {
+	args := make([]string, 0, len(original)+len(extra)+1)
+	for _, a := range original {
+		name := strings.SplitN(strings.TrimLeft(a, "-"), "=", 2)[0]
+		if name == "no-uac" || name == "elevated" {
+			continue
+		}
+		if len(extra) > 0 {
+			if name == "no-pause" {
+				args = append(args, a)
+			}
+			continue
+		}
+		args = append(args, a)
 	}
-	return nil
+	args = append(args, extra...)
+	return append(args, "--elevated")
 }
 
 // quoteArgs 把参数数组拼成命令行字符串，含空格的参数加引号。
 func quoteArgs(args []string) string {
 	out := make([]string, 0, len(args))
 	for _, a := range args {
-		if strings.ContainsAny(a, " \t") {
-			out = append(out, `"`+a+`"`)
-			continue
-		}
-		out = append(out, a)
+		out = append(out, syscall.EscapeArg(a))
 	}
 	return strings.Join(out, " ")
 }

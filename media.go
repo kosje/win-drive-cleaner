@@ -39,7 +39,7 @@ func scanMedia() []MediaEntry {
 	var out []MediaEntry
 	for _, root := range mediaRoots() {
 		// 仅扫描该根目录两层，控制耗时
-		filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		safeWalk(root, func(p string, info os.FileInfo, err error) error {
 			if err != nil || info == nil {
 				return nil
 			}
@@ -61,6 +61,8 @@ func scanMedia() []MediaEntry {
 
 // printMediaScan 提示候选视频/录屏文件（Top N），并说明可打开所在文件夹手动清理。
 func printMediaScan(top int) {
+	mediaIndex = nil
+	mediaDirs = nil
 	files := scanMedia()
 	if len(files) == 0 {
 		fmt.Println("  未在常见目录发现视频/录屏文件。")

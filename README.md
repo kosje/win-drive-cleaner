@@ -1,13 +1,13 @@
 # Win 盘清理工具（WinDriveCleaner）
 
 一个**零安装、绿色单文件**的 Windows C 盘垃圾清理工具。使用 Go 编译为静态可执行文件，
-**无任何运行时依赖**，可在任意 Windows 机器上直接运行，兼容 **Windows 8 / 10 / 11**（32 位与 64 位）。
+CLI 可直接运行；GUI 需要 WebView2 Runtime，缺失时自动回退到 CLI。支持 **Windows 8 / 10 / 11**（32 位与 64 位，旧系统需使用兼容的 Go 工具链构建）。
 
 ## 特性
 
 - **两种模式**
-  - **普通清理**：低风险、快速，清理系统/用户临时文件、Prefetch、缩略图缓存、DNS 缓存目录、Windows 更新下载缓存、WER 崩溃报告。
-  - **深度清理**：在普通清理基础上额外处理回收站、系统级临时文件、WinSxS 旧组件、`Windows.old` 等，释放空间更多（需管理员权限）。
+  - **普通清理**：低风险、快速，清理系统/用户临时文件、Prefetch、缩略图缓存、Windows 更新下载缓存、WER 崩溃报告。
+  - **深度清理**：在普通清理基础上额外处理回收站、系统盘临时目录、`Windows.old` 等（需管理员权限）；WinSxS 组件清理通过单独的 DISM 功能执行。
 - **安全优先**
   - 绝不触碰 `System32` / `WinSxS` 受保护目录、`pagefile.sys`、`System Volume Information` 等危险目标。
   - 遇到被占用/无权限的文件自动跳过并计数，不中断整体流程。
@@ -25,6 +25,8 @@
 - **删除可追溯**：所有删除前会把「路径+大小」写入 `%LOCALAPPDATA%\WinDriveCleaner\CleanerLog_<日期>.txt`，随时可查"刚才到底删了什么"。
 
 ## 更新日志
+
+- **v1.7.1**：**视频定位修复 + 清理安全与统计修复**。视频媒体和大文件的“打开”改用 Windows 原生定位接口，支持中文、空格和逗号路径；修复删除白名单、部分删除统计、磁盘可用空间、演练状态、异步任务异常、缓存扫描和启动项恢复。清理跳过目录联接/符号链接，移除 WinSxS 裸删与无效 DNS 目录目标；RunOnce 一次性启动项改为只读，避免无效的禁用开关。详见 [代码审查记录](REVIEW.md)。
 
 - **v1.7.0**：**默认 GUI 启动 + 大文件多选删除 + 启动即提权**。
   - **双击默认打开 GUI**：Win10/11 下双击 `WinDriveCleaner.exe` 不再进入命令行交互菜单，而是直接打开图形界面；系统缺少 WebView2 运行时（Win8 / 早期 Win10）时自动回退到命令行菜单。命令行参数（`--standard` / `--deep` / `--gui` 等）用法保持不变。
@@ -112,7 +114,7 @@ DISM /Online /Cleanup-Image /StartComponentCleanup
 
 ## 从源码构建
 
-需要 Go 1.21+（工具链零第三方依赖，纯标准库，可离线编译）：
+需要 Go 1.21+；首次构建需下载 `go.mod` 中的依赖。GUI 需要目标系统安装 WebView2 Runtime，缺失时回退到 CLI：
 
 ```bat
 go build -trimpath -ldflags "-s -w" -o WinDriveCleaner.exe .
@@ -124,7 +126,23 @@ go build -trimpath -ldflags "-s -w" -o WinDriveCleaner.exe .
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o WinDriveCleaner.exe .
 ```
 
-生成的是**静态链接**的单文件 `.exe`，目标机器无需安装任何运行库。
+生成的是单文件 `.exe`；GUI 仍需要 WebView2 Runtime。
+
+## 回归验证
+
+在 Windows 上运行 `go test ./...` 和 `go vet ./...`。测试使用隔离的临时目录，覆盖删除统计、路径保护、目录联接、演练状态、自启项恢复、日志尾部及视频路径解析。
+
+使用 Node.js 运行 `node --test gui_test.js`，验证 GUI 异步桥接的异常和重复任务处理。
+
+可选的真实桌面验证（会临时打开资源管理器，验证后关闭测试窗口）：
+
+```powershell
+$env:WDC_EXPLORER_INTEGRATION = '1'
+go test -run TestExplorerRevealsMediaIntegration -v
+Remove-Item Env:WDC_EXPLORER_INTEGRATION
+```
+
+该验证使用包含中文、空格和逗号的目录及视频文件名，确认实际打开其父目录并选中文件。
 
 ## 安全说明
 
@@ -138,7 +156,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o W
 |----|------|
 | 操作系统 | Windows 8 / 8.1 / 10 / 11 |
 | 架构 | x86 / x64（本仓库默认产出 x64；x86 见 `构建`） |
-| 依赖 | 无（静态单文件） |
+| 运行依赖 | CLI 无额外依赖；GUI 需要 WebView2 Runtime |
 
 生成 32 位版本：
 

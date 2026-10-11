@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,12 +69,20 @@ func (s StartupSource) isLMHive() bool {
 	return s == RegRunLM || s == RegRunOnceLM
 }
 
+func (s StartupSource) needsAdmin() bool {
+	return s.isLMHive() || s == StartupFolderCommon
+}
+
+func (s StartupSource) isRunOnce() bool {
+	return s == RegRunOnceCU || s == RegRunOnceLM
+}
+
 // startupDisabledSuffix 启动文件夹被禁用时追加的后缀。
 const startupDisabledSuffix = ".wcd_disabled"
 
 // StartupEntry 一条开机自启动项。
 type StartupEntry struct {
-	// ID 稳定标识（注册表项为 "HKCU:valuename"，启动文件夹为 .lnk 全路径）。
+	// ID 稳定标识（注册表项包含 hive、键路径、值名；启动文件夹为全路径）。
 	ID string
 	// Name 展示名称。
 	Name string
@@ -144,7 +153,7 @@ func listRegStartup(loc regRunLoc) []StartupEntry {
 			val = str
 		}
 		out = append(out, StartupEntry{
-			ID:      loc.hiveName() + ":" + name,
+			ID:      loc.hiveName() + ":" + loc.regPath + ":" + name,
 			Name:    name,
 			Target:  val,
 			Source:  loc.source,
@@ -156,9 +165,13 @@ func listRegStartup(loc regRunLoc) []StartupEntry {
 
 // isRegEnabled 判定注册表某运行项当前是否启用（读 StartupApproved）。
 // 规则（与任务管理器一致，已核实）：
-//  - StartupApproved\Run|\RunOnce 下无该值 → 视为启用
-//  - 值存在且首字节 0x02 → 启用；其余（如 0x03）→ 禁用
+//   - StartupApproved\Run|\RunOnce 下无该值 → 视为启用
+//   - 值存在且首字节 0x02 → 启用；其余（如 0x03）→ 禁用
 func isRegEnabled(loc regRunLoc, valueName string) bool {
+	if loc.source.isRunOnce() {
+		// StartupApproved does not control one-time RunOnce execution.
+		return true
+	}
 	ak, err := registry.OpenKey(loc.hive, loc.approved, registry.READ)
 	if err != nil {
 		// StartupApproved\Run 键本身可能不存在 → 视为启用
@@ -179,21 +192,19 @@ func isRegEnabled(loc regRunLoc, valueName string) bool {
 // setRegEnabled 开/关注册表某运行项。on=true 启用（删除 StartupApproved 值），
 // on=false 禁用（写 16 字节、首字节 0x03 的 StartupApproved 值）。
 func setRegEnabled(loc regRunLoc, valueName string, on bool) StartupResult {
+	if loc.source.isRunOnce() {
+		return StartupResult{OK: false, Error: "RunOnce 一次性启动项不支持 StartupApproved 开关，当前仅供查看"}
+	}
 	if on {
 		ak, err := registry.OpenKey(loc.hive, loc.approved, registry.SET_VALUE|registry.READ)
 		if err != nil {
-			// StartupApproved 键打不开时，若该值本就不存在也视为已启用
-			if isRegEnabled(loc, valueName) {
+			if isKeyNotValue(err) {
 				return StartupResult{OK: true, Msg: "已启用（该启动项本未禁用）"}
 			}
 			return StartupResult{OK: false, Error: fmt.Sprintf("无法启用: %v", err)}
 		}
 		defer ak.Close()
 		if err := ak.DeleteValue(valueName); err != nil && !isKeyNotValue(err) {
-			// 值不存在 → 本就已启用
-			if isKeyNotValue(err) {
-				return StartupResult{OK: true, Msg: "已启用（该启动项本未禁用）"}
-			}
 			return StartupResult{OK: false, Error: fmt.Sprintf("启用失败: %v", err)}
 		}
 		return StartupResult{OK: true, Msg: "已启用"}
@@ -215,11 +226,7 @@ func setRegEnabled(loc regRunLoc, valueName string, on bool) StartupResult {
 
 // isKeyNotValue 判定注册表错误是否为“值不存在”（ERROR_FILE_NOT_FOUND）。
 func isKeyNotValue(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "file not found") || strings.Contains(s, "does not exist")
+	return errors.Is(err, os.ErrNotExist)
 }
 
 // ---------- 启动文件夹 ----------
@@ -228,12 +235,12 @@ func isKeyNotValue(err error) bool {
 func startupFolders() map[StartupSource]string {
 	um := map[StartupSource]string{}
 	// 当前用户
-	um[StartupFolderUser] = filepath.Join(os.Getenv("LOCALAPPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+	um[StartupFolderUser] = filepath.Join(appDataDir(), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 	if um[StartupFolderUser] == "Microsoft\\Windows\\Start Menu\\Programs\\Startup" {
 		um[StartupFolderUser] = ""
 	}
 	// 所有用户
-	um[StartupFolderCommon] = filepath.Join(os.Getenv("ALLUSERSPROFILE"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+	um[StartupFolderCommon] = filepath.Join(allUsersProfile(), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 	if um[StartupFolderCommon] == "Microsoft\\Windows\\Start Menu\\Programs\\Startup" {
 		um[StartupFolderCommon] = ""
 	}
@@ -255,13 +262,13 @@ func listStartupFolder(src StartupSource, dir string) []StartupEntry {
 			continue
 		}
 		fn := e.Name()
-		ext := strings.ToLower(filepath.Ext(fn))
+		disabled := strings.HasSuffix(fn, startupDisabledSuffix)
+		display := strings.TrimSuffix(fn, startupDisabledSuffix)
+		ext := strings.ToLower(filepath.Ext(display))
 		if ext != ".lnk" && ext != ".url" && ext != ".cmd" && ext != ".bat" && ext != ".com" && ext != ".exe" {
 			continue
 		}
 		full := filepath.Join(dir, fn)
-		disabled := strings.HasSuffix(fn, startupDisabledSuffix)
-		display := strings.TrimSuffix(fn, startupDisabledSuffix)
 		out = append(out, StartupEntry{
 			ID:      full,
 			Name:    display,
@@ -325,15 +332,13 @@ func resolveRegLoc(src StartupSource) (regRunLoc, bool) {
 
 // setValueEnabled 对单个条目执行 启用/禁用（on=true 启用，false 禁用）。
 func setValueEnabled(e *StartupEntry, on bool) StartupResult {
+	if e.Source.needsAdmin() && !isAdmin() {
+		return StartupResult{OK: false, Error: "修改所有用户启动项需要管理员权限"}
+	}
 	switch {
 	case e.Source.isRegistry():
 		loc, _ := resolveRegLoc(e.Source)
-		// ID 形如 "HKCU:valuename"
-		_, valueName, found := strings.Cut(e.ID, ":")
-		if !found {
-			return StartupResult{OK: false, Error: "无法解析注册表值名"}
-		}
-		return setRegEnabled(loc, valueName, on)
+		return setRegEnabled(loc, e.Name, on)
 	case e.Source == StartupFolderUser || e.Source == StartupFolderCommon:
 		return setStartupFolderEnabled(e.Source, e.ID, on)
 	default:

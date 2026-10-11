@@ -10,7 +10,7 @@ import (
 )
 
 // 版本
-const version = "1.7.0"
+const version = "1.7.1"
 
 // 运行参数（由主流程填充）
 var (
@@ -34,7 +34,7 @@ func main() {
 	scanBigFiles := flag.Bool("scan-bigfiles", false, "扫描 ≥500MB 大文件 Top 20(只列不删)")
 	scanStartup := flag.Bool("scan-startup", false, "只读列出全部开机自启动项(注册表 Run/RunOnce + 启动文件夹)")
 	manageStartupFlag := flag.Bool("manage-startup", false, "交互管理开机自启动项(可逆禁用/启用)")
-	compactFlag := flag.Bool("compact", false, "执行系统盘压缩(compact /Compact, 需管理员, Win10/11)")
+	compactFlag := flag.Bool("compact", false, "执行系统盘压缩(compact /CompactOS:always, 需管理员, Win10/11)")
 	autoFlag := flag.Bool("auto", false, "自动模式：倒计时后按上次设置执行（由登录自启调用，回车可取消）")
 	guiFlag := flag.Bool("gui", false, "启动图形界面(GUI, 需 Win10/11 自带 WebView2)")
 	showHelp := flag.Bool("h", false, "显示帮助")
@@ -70,7 +70,7 @@ func main() {
 			interactive(noUAC)
 		}
 	case *compactFlag:
-		RunCompact(false)
+		RunCompact(dry)
 	case deep:
 		DryRun = dry
 		execute(true, noUAC)
@@ -105,18 +105,25 @@ func runDefault() {
 }
 
 // execute 按模式执行清理（含 UAC 提权判断）。
-func execute(includeDeep, skipUAC bool) {
+func execute(includeDeep, skipUAC bool) bool {
 	// 深度清理需管理员；非管理员时自动请求 UAC 提权
 	if includeDeep && !skipUAC && !isAdmin() {
 		fmt.Println("  深度清理需要管理员权限，正在请求 UAC 提权…")
-		if err := elevateSelf(); err != nil {
+		var extra []string
+		if inInteractive {
+			extra = []string{"--deep"}
+			if DryRun {
+				extra = append(extra, "--dry-run")
+			}
+		}
+		if err := elevateSelfWithArgs(extra...); err != nil {
 			fmt.Println("  提权失败:", err)
 			// 提权失败也要暂停，让用户看到原因
 			pause()
 			os.Exit(2)
 		}
 		// 提权成功：父进程结束，子进程（elevated=true）接管并负责暂停
-		return
+		return false
 	}
 
 	fmt.Printf(" [%s] %s\n", nowStamp(), osDescription())
@@ -177,11 +184,12 @@ func execute(includeDeep, skipUAC bool) {
 	// 交互菜单内：不暂停，直接返回菜单，方便连续做下一项；只有选 q 才退出
 	// 命令行直接执行（非交互）：默认暂停方便看清结果；--no-pause 时自动结束
 	if inInteractive {
-		return
+		return true
 	}
 	if !noPause {
 		pause()
 	}
+	return true
 }
 
 // pause 停住等待回车，避免窗口一闪而过。
@@ -217,8 +225,12 @@ func interactive(skipUAC bool) {
 		fmt.Print("  请输入: ")
 
 		var choice string
-		_, _ = fmt.Scanln(&choice)
+		_, err := fmt.Scanln(&choice)
+		if err != nil && choice == "" {
+			return
+		}
 		choice = strings.ToLower(strings.TrimSpace(choice))
+		DryRun = false
 		switch choice {
 		case "1":
 			DryRun = false
@@ -264,6 +276,7 @@ func interactive(skipUAC bool) {
 
 // commsFlow 通讯软件清理流程：先按天数扫描显示大小，再确认删除。
 func commsFlow() {
+	DryRun = false
 	days := askInt("  清理多少天前的通讯软件文件？(默认 30, 0=全部旧文件也保留只统计): ", 30)
 	if days < 0 {
 		days = 0
@@ -295,7 +308,10 @@ func mediaFlow() {
 	for {
 		fmt.Println("  输入 M 序号(1-10)打开所在文件夹，o=全部仅查看，q=返回")
 		var c string
-		_, _ = fmt.Scanln(&c)
+		_, scanErr := fmt.Scanln(&c)
+		if scanErr != nil && c == "" {
+			return
+		}
 		c = strings.ToLower(strings.TrimSpace(c))
 		if c == "q" {
 			return
@@ -332,7 +348,7 @@ func printHelp() {
 	fmt.Println("  安全清理 Windows C 盘垃圾，零安装、绿色单文件，兼容 Windows 8/10/11。")
 	fmt.Println()
 	fmt.Println("用法:")
-	fmt.Println("  直接运行              进入交互菜单")
+	fmt.Println("  直接运行              启动图形界面，缺少 WebView2 时进入交互菜单")
 	fmt.Println("  --standard            普通清理(低风险)")
 	fmt.Println("  --deep                深度清理(需管理员, 释放空间更多)")
 	fmt.Println("  --dry-run             演练: 只统计大小, 不删除")

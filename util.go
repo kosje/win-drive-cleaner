@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -66,7 +67,58 @@ func localAppData() string {
 
 // userProfile 返回 %USERPROFILE%。
 func userProfile() string {
-	return strings.TrimSpace(os.Getenv("USERPROFILE"))
+	if v := strings.TrimSpace(os.Getenv("USERPROFILE")); v != "" {
+		return v
+	}
+	dir, _ := os.UserHomeDir()
+	return dir
+}
+
+func expandWindowsEnv(s string) string {
+	s = os.ExpandEnv(s)
+	var out strings.Builder
+	for {
+		start := strings.IndexByte(s, '%')
+		if start < 0 {
+			out.WriteString(s)
+			break
+		}
+		end := strings.IndexByte(s[start+1:], '%')
+		if end < 0 {
+			out.WriteString(s)
+			break
+		}
+		end += start + 1
+		out.WriteString(s[:start])
+		if value, ok := os.LookupEnv(s[start+1 : end]); ok {
+			out.WriteString(value)
+		} else {
+			out.WriteString(s[start : end+1])
+		}
+		s = s[end+1:]
+	}
+	return out.String()
+}
+
+// Read an entire line without buffering ahead of the other CLI prompts.
+func readInputLine() (string, error) {
+	var line strings.Builder
+	var b [1]byte
+	for {
+		n, err := os.Stdin.Read(b[:])
+		if n > 0 {
+			if b[0] == '\n' {
+				return strings.TrimSuffix(line.String(), "\r"), nil
+			}
+			line.WriteByte(b[0])
+		}
+		if err != nil {
+			if err == io.EOF && line.Len() > 0 {
+				return line.String(), nil
+			}
+			return line.String(), err
+		}
+	}
 }
 
 // allUsersProfile 返回 %ALLUSERSPROFILE%（C:\ProgramData）。
@@ -119,11 +171,8 @@ func logDir() string {
 }
 
 // logDeletion 把一条"即将删除"记录追加写入当日日志文件。
-// 失败静默（不影响清理主流程）。DryRun 时不记（没真删）。
+// 失败静默（不影响清理主流程）。仅由实际删除分支调用。
 func logDeletion(path string, bytes int64) {
-	if DryRun {
-		return
-	}
 	if err := os.MkdirAll(logDir(), 0755); err != nil {
 		return
 	}
@@ -135,4 +184,3 @@ func logDeletion(path string, bytes int64) {
 	defer f.Close()
 	_, _ = fmt.Fprintf(f, "[%s] %s  (%s)\n", nowStamp(), path, formatBytes(bytes))
 }
-

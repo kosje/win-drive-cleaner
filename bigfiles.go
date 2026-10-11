@@ -19,6 +19,7 @@ type BigFile struct {
 func bigFileExcludedDirs() []string {
 	root := systemDrive()
 	return []string{
+		systemRoot(),
 		filepath.Join(root, "Windows"),
 		filepath.Join(root, "Program Files"),
 		filepath.Join(root, "Program Files (x86)"),
@@ -55,7 +56,7 @@ func scanBigFiles(minMB, top int) []BigFile {
 	isExcludedDir := func(p string) bool {
 		clean := filepath.Clean(p)
 		for _, ex := range exclDirs {
-			if clean == ex {
+			if pathWithin(clean, ex) {
 				return true
 			}
 		}
@@ -63,7 +64,7 @@ func scanBigFiles(minMB, top int) []BigFile {
 	}
 
 	var out []BigFile
-	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+	safeWalk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			// 无权限目录：若是目录且未排除则剪枝；否则跳过本节点
 			if info != nil && info.IsDir() && isExcludedDir(p) {
@@ -77,7 +78,7 @@ func scanBigFiles(minMB, top int) []BigFile {
 			}
 			return nil
 		}
-		if exclFiles[info.Name()] {
+		if !info.Mode().IsRegular() || exclFiles[strings.ToLower(info.Name())] {
 			return nil
 		}
 		if info.Size() >= minBytes {
@@ -95,6 +96,10 @@ func scanBigFiles(minMB, top int) []BigFile {
 // printBigFiles 显示 Top N 大文件。
 func printBigFiles(minMB, top int) {
 	list := scanBigFiles(minMB, top)
+	printBigFileEntries(list, minMB, top)
+}
+
+func printBigFileEntries(list []BigFile, minMB, top int) {
 	fmt.Println()
 	fmt.Printf("  ── 大文件检测（≥ %dMB，Top %d，只列不删）──\n", minMB, top)
 	if len(list) == 0 {
@@ -113,11 +118,11 @@ var bigIndex []BigFile
 // bigFileFlow 交互流程：问阈值 → 扫描显示 → 用户按 B 序号打开所在文件夹。
 func bigFileFlow() {
 	minMB := askInt("  检测 ≥ 多少 MB 的大文件？(默认 500): ", 500)
-	if minMB < 0 {
-		minMB = 0
+	if minMB <= 0 {
+		minMB = 500
 	}
-	printBigFiles(minMB, 20)
 	bigIndex = scanBigFiles(minMB, 20)
+	printBigFileEntries(bigIndex, minMB, 20)
 	if len(bigIndex) == 0 {
 		return
 	}
@@ -151,25 +156,25 @@ func BigFilesFlowReadOnly() {
 //   - 不是系统保留文件（pagefile.sys / hiberfil.sys 等）
 //   - 必须是真实存在的普通文件（非目录、非软链）
 func isBigFileDeletable(path string) bool {
-	clean := filepath.Clean(strings.TrimSpace(path))
+	clean := filepath.Clean(path)
 	if clean == "" || !filepath.IsAbs(clean) {
 		return false
 	}
 	root := filepath.Clean(systemDrive())
-	if clean != root && !strings.HasPrefix(clean, root+string(filepath.Separator)) {
+	if !pathWithin(clean, root) {
 		return false
 	}
 	for _, ex := range bigFileExcludedDirs() {
 		exClean := filepath.Clean(ex)
-		if clean == exClean || strings.HasPrefix(clean, exClean+string(filepath.Separator)) {
+		if pathWithin(clean, exClean) {
 			return false
 		}
 	}
-	if bigFileExcludedFiles()[filepath.Base(clean)] {
+	if bigFileExcludedFiles()[strings.ToLower(filepath.Base(clean))] {
 		return false
 	}
 	info, err := os.Lstat(clean)
-	if err != nil || info.IsDir() {
+	if err != nil || !info.Mode().IsRegular() || hasReparseAncestor(clean) {
 		return false
 	}
 	return true
