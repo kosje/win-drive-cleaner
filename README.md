@@ -6,8 +6,8 @@ CLI 可直接运行；GUI 需要 WebView2 Runtime，缺失时自动回退到 CLI
 ## 特性
 
 - **两种模式**
-  - **普通清理**：低风险、快速，清理系统/用户临时文件、Prefetch、缩略图缓存、Windows 更新下载缓存、WER 崩溃报告。
-  - **深度清理**：在普通清理基础上额外处理回收站、系统盘临时目录、`Windows.old` 等（需管理员权限）；WinSxS 组件清理通过单独的 DISM 功能执行。
+  - **普通清理**：低风险、快速，清理系统/用户临时文件、Prefetch、缩略图与图标缓存、Windows 更新下载缓存、WER 崩溃报告与 CrashDumps、DirectX/NVIDIA/AMD 着色器缓存。
+  - **深度清理**：在普通清理基础上额外处理回收站、系统盘临时目录、`Windows.old`、传递优化缓存、Minidump / `MEMORY.DMP`、CBS/DISM/DPX/Panther 日志等（需管理员权限）；WinSxS 组件清理通过单独的 DISM 功能执行。
 - **安全优先**
   - 绝不触碰 `System32` / `WinSxS` 受保护目录、`pagefile.sys`、`System Volume Information` 等危险目标。
   - 遇到被占用/无权限的文件自动跳过并计数，不中断整体流程。
@@ -26,6 +26,8 @@ CLI 可直接运行；GUI 需要 WebView2 Runtime，缺失时自动回退到 CLI
 - **删除可追溯**：所有删除前会把「路径+大小」写入 `%LOCALAPPDATA%\WinDriveCleaner\CleanerLog_<日期>.txt`，随时可查"刚才到底删了什么"。
 
 ## 更新日志
+
+- **v1.9.1**：**深度优化模块代码审查修复**。PowerShell 脚本正文改经 stdin 以 Base64 传输，避免长脚本逼近 32767 字符命令行上限；子进程使用独立隐藏控制台并关闭进度流，不再改动父窗口代码页、不再混入 CLIXML 杂讯。修复一键精简在之前点过「停止清理」后第 4 步什么都不清理的问题；单步失败不再中断后续步骤并汇总报告。`--optimize` 与交互菜单 14) 非管理员时自动 UAC 提权并在结束时暂停；参数先校验再检查权限。恢复更新时传递优化服务改回默认自动启动；删除 Recall/CoreAI 目录时跳过目录联接。补充 `%LOCALAPPDATA%\Temp` 清理项、PowerShell 语法解析与真实长脚本测试，以及 README 命令行文档。
 
 - **v1.9.0**：**新增 Windows 深度优化与净化模块 + 扩展 C 盘清理项**。
   - **深度优化与净化（GUI + CLI）**：新增「深度优化与净化」面板、交互菜单 14) 与 `--optimize` / `--pinyin-preset` 命令行参数。支持彻底删除微软拼音并永久免疫（3 种美式键盘方案）、彻底封杀 Windows 系统更新（停用核心服务、阻断 WaaSMedic 自愈、写入组策略并禁用计划任务）、彻底删除对标 RemoveWindowsAI 的 22 项 Windows AI 特性（Copilot / Recall / AI Fabric / 画图与记事本 AI / Edge 侧边栏等）、一键终极精简，以及分类还原与重新启用中心。
@@ -89,6 +91,8 @@ CLI 可直接运行；GUI 需要 WebView2 Runtime，缺失时自动回退到 CLI
    2) 深度清理(需管理员)
    3) 演练普通清理(不删除)
    4) 演练深度清理(不删除)
+   …
+  14) 深度优化与净化(微软拼音免疫/封杀更新/删除22项AI/一键精简与还原)
    q) 退出
   请输入:
 ```
@@ -109,10 +113,15 @@ CLI 可直接运行；GUI 需要 WebView2 Runtime，缺失时自动回退到 CLI
 | `WinDriveCleaner.exe --scan-bigfiles` | 扫描 ≥500MB 大文件 Top 20（只列不删） |
 | `WinDriveCleaner.exe --scan-media` | 扫描视频/录屏候选（只提示大小） |
 | `WinDriveCleaner.exe --compact` | 执行系统盘压缩（compact LZX，需管理员） |
+| `WinDriveCleaner.exe --optimize pinyin --pinyin-preset 1` | 彻底删除微软拼音并永久免疫（方案 1=中文美式，2=英文美式，3=两者） |
+| `WinDriveCleaner.exe --optimize block-update` | 彻底封杀 Windows 系统更新 |
+| `WinDriveCleaner.exe --optimize remove-ai` | 彻底删除 22 项 Windows AI 特性 |
+| `WinDriveCleaner.exe --optimize all` | 一键终极精简：拼音免疫 + 封杀更新 + 删除 22 项 AI + 深度清理 C 盘 |
+| `WinDriveCleaner.exe --optimize restore-pinyin` / `restore-update` / `restore-ai` | 分类还原：恢复微软拼音 / Windows 更新 / 22 项 AI 支持 |
 | `WinDriveCleaner.exe --version` | 打印版本 |
 | `WinDriveCleaner.exe --help` | 显示帮助 |
 
-> 深度清理涉及系统级目录，程序在**非管理员**下运行会自动请求 UAC 提权；
+> 深度清理与 `--optimize` 涉及系统级目录和策略，程序在**非管理员**下运行会自动请求 UAC 提权；
 > 提权成功后由新的管理员进程继续执行，并在结束时暂停等待回车，避免窗口一闪而过。
 
 ### 3. 进一步释放空间（可选）

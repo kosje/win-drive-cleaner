@@ -127,7 +127,7 @@
             <label class="chk"><input type="radio" name="mode" value="deep"> 深度清理（需管理员）</label>
             <label class="chk"><input type="checkbox" id="dryRun"> 演练模式（只统计不删除）</label>
           </div>
-          <p class="hint">普通清理覆盖临时文件/预读/缩略图/更新缓存等；深度清理额外含回收站、系统盘临时目录、Windows.old 等。建议先跑演练模式看清要动哪些。</p>
+          <p class="hint">普通清理覆盖临时文件/预读/缩略图与图标缓存/更新缓存/崩溃报告与转储/显卡着色器缓存等；深度清理额外含回收站、系统盘临时目录、Windows.old、传递优化缓存、Minidump/MEMORY.DMP、CBS/DISM/Panther 日志等。建议先跑演练模式看清要动哪些。</p>
           <div class="row">
             <button class="btn" id="btnClean">开始清理</button>
             <button class="btn warn" id="btnCleanStop" disabled>停止</button>

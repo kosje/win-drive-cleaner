@@ -132,6 +132,70 @@ func TestOptimizeExecuteRequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestOptimizeExecuteValidatesBeforeAdminCheck(t *testing.T) {
+	origAdmin := optimizerAdminCheck
+	defer func() { optimizerAdminCheck = origAdmin }()
+	optimizerAdminCheck = func() bool { return false }
+
+	if _, err := OptimizeExecute("bogus", ""); err == nil || !strings.Contains(err.Error(), "未知") {
+		t.Fatalf("expected unknown action error, got %v", err)
+	}
+	if _, err := OptimizeExecute(OptActionOptimizeAll, "7"); err == nil || !strings.Contains(err.Error(), "方案") {
+		t.Fatalf("expected invalid preset error, got %v", err)
+	}
+}
+
+// 真实调用系统 PowerShell，只执行 Write-Output，不修改系统。
+// 校验：stdin 传输可承载超过命令行上限的长脚本，且中文输出不乱码。
+func TestRunOptimizerPowerShellLongUnicodeScript(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("$ErrorActionPreference = 'Stop'\n")
+	for b.Len() < 70000 {
+		b.WriteString("# 填充注释用于验证超长脚本不会受 32767 字符命令行限制 0123456789\n")
+	}
+	b.WriteString("function Test-Joined { param([string]$A) return \"$A-完成\" }\n")
+	b.WriteString("if ($true) {\n    Write-Output (Test-Joined '微软拼音')\n}\n")
+	out, err := runOptimizerPowerShell(b.String())
+	if err != nil {
+		t.Fatalf("powershell failed: %v\n%s", err, out)
+	}
+	if out != "微软拼音-完成" {
+		t.Fatalf("unexpected output %q", out)
+	}
+}
+
+func TestOptimizeExecuteAllContinuesAfterStageFailure(t *testing.T) {
+	origAdmin, origRunner, origClean := optimizerAdminCheck, optimizerRunner, optimizerDeepClean
+	defer func() {
+		optimizerAdminCheck, optimizerRunner, optimizerDeepClean = origAdmin, origRunner, origClean
+	}()
+	optimizerAdminCheck = func() bool { return true }
+	calls := 0
+	optimizerRunner = func(string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "pinyin failed", errors.New("exit status 1")
+		}
+		return "ok", nil
+	}
+	cleaned := false
+	optimizerDeepClean = func() (int, int, int64, int64) { cleaned = true; return 0, 0, 0, 0 }
+
+	res, err := OptimizeExecute(OptActionOptimizeAll, "1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 3 || !cleaned {
+		t.Fatalf("all stages must still run after a failure: calls=%d cleaned=%v", calls, cleaned)
+	}
+	if ok, _ := res["ok"].(bool); ok {
+		t.Fatalf("expected ok=false when a stage failed")
+	}
+	if msg, _ := res["msg"].(string); !strings.Contains(msg, "微软拼音") {
+		t.Fatalf("failure summary should name the failed stage, got %q", msg)
+	}
+}
+
 func TestOptimizeExecuteAllRunsAllFourStages(t *testing.T) {
 	origAdmin := optimizerAdminCheck
 	origRunner := optimizerRunner
@@ -204,5 +268,26 @@ func TestOptimizeExecutePropagatesRunnerFailure(t *testing.T) {
 	}
 	if out, _ := res["output"].(string); out != "partial output" {
 		t.Fatalf("expected partial output preserved, got %q", out)
+	}
+}
+
+// 用 PowerShell 自带解析器检查全部生成脚本的语法（只解析，不执行）。
+func TestOptimizerScriptsParseInPowerShell(t *testing.T) {
+	actions := []string{OptActionPurgePinyin, OptActionBlockUpdate, OptActionRemoveAI,
+		OptActionRestorePinyin, OptActionRestoreUpdate, OptActionRestoreAI}
+	for _, action := range actions {
+		script, _, err := buildOptimizerScript(action, "3")
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded := base64.StdEncoding.EncodeToString([]byte(script))
+		checker := "$s = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + encoded + "'))\n" +
+			"$tokens = $null; $errs = $null\n" +
+			"[void][System.Management.Automation.Language.Parser]::ParseInput($s, [ref]$tokens, [ref]$errs)\n" +
+			"if ($errs.Count) { $errs | ForEach-Object { Write-Output (\"L{0}: {1}\" -f $_.Extent.StartLineNumber, $_.Message) } } else { Write-Output 'PARSE-OK' }\n"
+		out, err := runOptimizerPowerShell(checker)
+		if err != nil || out != "PARSE-OK" {
+			t.Errorf("script %q failed to parse: %v\n%s", action, err, out)
+		}
 	}
 }

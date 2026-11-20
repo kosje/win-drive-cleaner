@@ -45,23 +45,40 @@ func encodePowerShellUTF16LE(script string) string {
 	return base64.StdEncoding.EncodeToString(buf)
 }
 
+// optimizerBootstrap 是通过 -EncodedCommand 传入的极短引导脚本：
+// 从 stdin 读取 Base64(UTF-8) 编码的正文并在当前作用域执行。
+// 正文不走命令行，避免 22 项 AI 脚本等长脚本逼近 Windows 32767 字符命令行上限；
+// 用 Base64 传输则不受控制台输入代码页影响，中文不会乱码。
+const optimizerBootstrap = `$ProgressPreference = 'SilentlyContinue'
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+$payload = [Console]::In.ReadToEnd()
+$body = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($payload.Trim()))
+. ([ScriptBlock]::Create($body))
+`
+
+// createNoWindow 让子进程拥有独立的隐藏控制台：
+// 否则子 PowerShell 修改 OutputEncoding 会连带改掉父 CLI 窗口的代码页。
+const createNoWindow = 0x08000000
+
 // runOptimizerPowerShell 调用系统目录中的 Windows PowerShell 静默执行脚本。
 func runOptimizerPowerShell(script string) (string, error) {
-	encoded := encodePowerShellUTF16LE(script)
 	cmd := windowsTool(
 		`WindowsPowerShell\v1.0\powershell.exe`,
 		"-NoProfile",
 		"-NonInteractive",
 		"-ExecutionPolicy", "Bypass",
-		"-EncodedCommand", encoded,
+		"-EncodedCommand", encodePowerShellUTF16LE(optimizerBootstrap),
 	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+	cmd.Stdin = strings.NewReader(base64.StdEncoding.EncodeToString([]byte(script)))
 	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	return strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n")), err
 }
 
 func runOptimizerDeepClean() (int, int, int64, int64) {
+	// 清除可能残留的「停止清理」标志（例如之前在磁盘清理页点过停止），
+	// 否则一键精简的第 4 步会在第一项之前直接退出、什么都不清理。
+	ResetCleanCancel()
 	freeBefore := freeSpaceOnSystemDrive()
 	results := runItemsWithOptions(true, false, nil)
 	deleted, errs, bytes := totalsOf(results)
@@ -86,9 +103,8 @@ func normalizePinyinPreset(preset string) (string, error) {
 
 // buildOptimizerScript 根据操作类型生成对应的 PowerShell 脚本（纯函数，便于单测）。
 func buildOptimizerScript(action, preset string) (string, string, error) {
-	const header = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-$ErrorActionPreference = 'Continue'
+	const header = `$ErrorActionPreference = 'Continue'
+$ProgressPreference = 'SilentlyContinue'
 
 function Set-RegDword {
     param([string]$Path, [string]$Name, [int]$Value)
@@ -315,7 +331,11 @@ $aiFolders = @(
     "$env:PROGRAMDATA\Microsoft\CoreAI"
 )
 foreach ($f in $aiFolders) {
-    if (Test-Path $f) { Remove-Item -Path $f -Recurse -Force -ErrorAction SilentlyContinue }
+    $item = Get-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+    # 跳过目录联接/符号链接，避免 PowerShell 5.1 递归删除时跟随到链接目标
+    if ($item -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        Remove-Item -LiteralPath $f -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Output "  [21/22] 在记事本中禁用 AI 重写与润色功能..."
@@ -357,7 +377,7 @@ Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\wuauserv" -Name 
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" -Name "Start" -Value 3 -Type DWord -ErrorAction SilentlyContinue
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\UsoSvc" -Name "Start" -Value 2 -Type DWord -ErrorAction SilentlyContinue
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bits" -Name "Start" -Value 3 -Type DWord -ErrorAction SilentlyContinue
-Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\dosvc" -Name "Start" -Value 3 -Type DWord -ErrorAction SilentlyContinue
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\dosvc" -Name "Start" -Value 2 -Type DWord -ErrorAction SilentlyContinue
 Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
 
 $tasks = @(
@@ -427,16 +447,22 @@ Write-Output "  提示：如需 Copilot 应用，可在微软应用商店 (Micro
 // OptimizeExecute 执行深度优化或还原操作（GUI / CLI 共用，不读取 stdin）。
 func OptimizeExecute(action, preset string) (map[string]interface{}, error) {
 	action = strings.ToLower(strings.TrimSpace(action))
+	// 先校验参数，再检查权限：非法输入应得到准确的错误原因
+	if action == OptActionOptimizeAll {
+		if _, err := normalizePinyinPreset(preset); err != nil {
+			return nil, err
+		}
+	} else if _, _, err := buildOptimizerScript(action, preset); err != nil {
+		return nil, err
+	}
 	if !optimizerAdminCheck() {
 		return nil, errors.New("深度优化与净化需要管理员权限，请以管理员身份运行本工具")
 	}
 
 	if action == OptActionOptimizeAll {
-		p, err := normalizePinyinPreset(preset)
-		if err != nil {
-			return nil, err
-		}
+		p, _ := normalizePinyinPreset(preset)
 		var outParts []string
+		var failures []string
 		steps := []struct {
 			act  string
 			name string
@@ -454,12 +480,10 @@ func OptimizeExecute(action, preset string) (map[string]interface{}, error) {
 			if out != "" {
 				outParts = append(outParts, out)
 			}
+			// 与原脚本一致：单步失败不中断后续步骤，最后汇总报告
 			if runErr != nil {
-				return map[string]interface{}{
-					"ok":     false,
-					"output": strings.Join(outParts, "\n\n"),
-					"msg":    fmt.Sprintf("%s 执行未完全成功: %v", step.name, runErr),
-				}, nil
+				failures = append(failures, fmt.Sprintf("%s（%v）", step.name, runErr))
+				outParts = append(outParts, fmt.Sprintf("  [!] %s 执行未完全成功: %v", step.name, runErr))
 			}
 		}
 		deleted, errs, bytes, gain := optimizerDeepClean()
@@ -471,6 +495,13 @@ func OptimizeExecute(action, preset string) (map[string]interface{}, error) {
 			cleanSummary += fmt.Sprintf("，%d 项因占用跳过", errs)
 		}
 		outParts = append(outParts, cleanSummary)
+		if len(failures) > 0 {
+			return map[string]interface{}{
+				"ok":     false,
+				"output": strings.Join(outParts, "\n\n"),
+				"msg":    "一键终极精简已执行，但以下步骤未完全成功: " + strings.Join(failures, "；"),
+			}, nil
+		}
 		outParts = append(outParts, "[完成] 全套深度优化已全部执行完毕！建议注销或重启一次电脑以彻底生效。")
 		return map[string]interface{}{
 			"ok":     true,

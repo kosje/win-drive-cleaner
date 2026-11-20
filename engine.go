@@ -56,6 +56,7 @@ func standardItems() []CleanItem {
 	return []CleanItem{
 		{Name: "Windows 临时文件", Path: systemRoot() + "\\Temp", Mode: ModeClearContents, Deep: false},
 		{Name: "用户临时文件", Path: userTemp(), Mode: ModeClearContents, Deep: false},
+		{Name: "本地应用临时文件", Path: filepath.Join(localAppData(), "Temp"), Mode: ModeClearContents, Deep: false},
 		{Name: "系统预读(Prefetch)", Path: filepath.Join(systemRoot(), "Prefetch"), Mode: ModeClearContents, Deep: false},
 		{Name: "缩略图与图标缓存", Path: filepath.Join(localAppData(), "Microsoft", "Windows", "Explorer"), Mode: ModeThumbnailCache, Deep: false},
 		{Name: "Windows 更新下载缓存", Path: filepath.Join(systemRoot(), "SoftwareDistribution", "Download"), Mode: ModeClearContents, Deep: false},

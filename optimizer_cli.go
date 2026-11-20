@@ -8,7 +8,25 @@ import (
 )
 
 // RunOptimizeCLI 通过命令行参数执行单项深度优化/还原（--optimize）。
+// 非管理员且未禁用 UAC 时自动提权，在新的管理员窗口中执行。
 func RunOptimizeCLI(action, preset string) {
+	if !isAdmin() && !noUAC && !elevated {
+		fmt.Println("  深度优化与净化需要管理员权限，正在请求 UAC 提权…")
+		if err := elevateSelfWithArgs(); err != nil {
+			fmt.Println("  提权失败:", err)
+			if !noPause {
+				pause()
+			}
+		}
+		return
+	}
+	runOptimizeAndPrint(action, preset)
+	if !inInteractive && !noPause {
+		pause()
+	}
+}
+
+func runOptimizeAndPrint(action, preset string) {
 	res, err := OptimizeExecute(action, preset)
 	if err != nil {
 		fmt.Println("  错误:", err)
@@ -22,12 +40,37 @@ func RunOptimizeCLI(action, preset string) {
 	}
 }
 
+// runOptimizeFromMenu 交互菜单内执行：已是管理员则就地执行；
+// 否则在新的管理员窗口中执行（结束后该窗口会停住等待回车）。
+func runOptimizeFromMenu(action, preset string) {
+	if isAdmin() {
+		runOptimizeAndPrint(action, preset)
+		return
+	}
+	if noUAC {
+		fmt.Println("  错误: 深度优化与净化需要管理员权限（当前使用了 --no-uac）。")
+		return
+	}
+	args := []string{"--optimize", action}
+	if preset != "" {
+		args = append(args, "--pinyin-preset", preset)
+	}
+	if err := elevateSelfWithArgs(args...); err != nil {
+		fmt.Println("  提权失败:", err)
+		return
+	}
+	fmt.Println("  已在新的管理员窗口中执行，请在该窗口查看结果。")
+}
+
 // manageOptimize 命令行交互式深度优化与净化菜单。
 func manageOptimize() {
 	for {
 		fmt.Println()
 		fmt.Println("========== Windows 深度优化与净化（需管理员） ==========")
 		fmt.Printf(" 权限: %s\n", adminStateLabel())
+		if !isAdmin() {
+			fmt.Println(" 提示: 当前非管理员，所选操作将通过 UAC 在新的管理员窗口中执行。")
+		}
 		fmt.Println("   1) 彻底删除微软拼音输入法 + 永久免疫 (可选美式键盘方案)")
 		fmt.Println("   2) 彻底封杀 Windows 系统更新 (停用服务/破坏自愈/策略拦截)")
 		fmt.Println("   3) 彻底删除 Windows AI 全特性 (对标 RemoveWindowsAI 22 项)")
@@ -45,27 +88,26 @@ func manageOptimize() {
 		choice = strings.ToLower(strings.TrimSpace(choice))
 		switch choice {
 		case "1":
-			preset := askPinyinPreset()
-			RunOptimizeCLI(OptActionPurgePinyin, preset)
+			runOptimizeFromMenu(OptActionPurgePinyin, askPinyinPreset())
 		case "2":
 			if askYesNo("  确定彻底封杀 Windows 系统更新吗（可随时在此菜单还原）?", false) {
-				RunOptimizeCLI(OptActionBlockUpdate, "")
+				runOptimizeFromMenu(OptActionBlockUpdate, "")
 			}
 		case "3":
 			if askYesNo("  确定彻底删除 22 项 Windows AI 特性吗（可随时在此菜单还原）?", false) {
-				RunOptimizeCLI(OptActionRemoveAI, "")
+				runOptimizeFromMenu(OptActionRemoveAI, "")
 			}
 		case "4":
 			preset := askPinyinPreset()
 			if askYesNo("  确定执行一键终极精简（拼音 + 更新 + AI + 深度清理 C 盘）吗?", false) {
-				RunOptimizeCLI(OptActionOptimizeAll, preset)
+				runOptimizeFromMenu(OptActionOptimizeAll, preset)
 			}
 		case "5":
-			RunOptimizeCLI(OptActionRestorePinyin, "")
+			runOptimizeFromMenu(OptActionRestorePinyin, "")
 		case "6":
-			RunOptimizeCLI(OptActionRestoreUpdate, "")
+			runOptimizeFromMenu(OptActionRestoreUpdate, "")
 		case "7":
-			RunOptimizeCLI(OptActionRestoreAI, "")
+			runOptimizeFromMenu(OptActionRestoreAI, "")
 		case "q", "exit", "quit":
 			return
 		default:
