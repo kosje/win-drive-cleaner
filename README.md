@@ -27,6 +27,13 @@ CLI 可直接运行；GUI 需要 WebView2 Runtime，缺失时自动回退到 CLI
 
 ## 更新日志
 
+- **v1.9.2**：**深度代码审查与修复（第二轮）**。
+  - **修复微软拼音在 Windows 10/11 实机上 GUID 不匹配导致无法真正移除/恢复的问题**：原 `.bat` 脚本中 `$pinyin1`/`$pinyin2` 均误拼了后半段 GUID，未能命中 Windows 10/11 实机 `Get-WinUserLanguageList` 中的真实微软拼音标识 `0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FA550B04-5AD7-411F-A5AC-CA038EC515D7}`；现同时按精确标识与 CLSID/Profile GUID 通配清理（保留第三方输入法），兼容 `zh-Hans-CN`/`zh-CN`，并在仅选方案 2 且中文语言下无其他键盘时自动兜底保留 `0804:00000409` 以防系统自动重置回微软拼音；还原时恢复真实微软拼音 GUID。
+  - **补齐还原中心遗漏项**：恢复 Windows 更新时自动检测并清除 `WaaSMedicSvc` 的单字节损坏 `FailureActions` 值；恢复 22 项 Windows AI 时补齐 `AcceptedPrivacyPolicy`、`ModelDownloadEnabled`、`CanCortanaBeEnabled` 与 `SettingsPageVisibility` 空子键清理，并仅在对应服务存在时恢复 AI 服务启动类型。
+  - **修复 `--optimize` 忽略 `--dry-run` 及未校验参数即触发 UAC 提权的问题**：`--optimize` 现支持 `--dry-run` 演练模式（不提权、不修改系统）；命令行与交互菜单在请求 UAC 提权前先行校验参数合法性，命令行直接调用失败时返回非零退出码。
+  - **修复 8.3 短路径 `%TEMP%` 与长路径 `%LOCALAPPDATA%\Temp` 在演练模式下重复统计的问题**：`collectItems` 结合句柄解析后的真实长路径去重。
+  - **修复 CLI 输入混用 `fmt.Scanln` 与 `readInputLine` 的行尾空格残留问题**，并在 GUI 执行优化后同步刷新顶栏与磁盘信息页容量。
+
 - **v1.9.1**：**深度优化模块代码审查修复**。PowerShell 脚本正文改经 stdin 以 Base64 传输，避免长脚本逼近 32767 字符命令行上限；子进程使用独立隐藏控制台并关闭进度流，不再改动父窗口代码页、不再混入 CLIXML 杂讯。修复一键精简在之前点过「停止清理」后第 4 步什么都不清理的问题；单步失败不再中断后续步骤并汇总报告。`--optimize` 与交互菜单 14) 非管理员时自动 UAC 提权并在结束时暂停；参数先校验再检查权限。恢复更新时传递优化服务改回默认自动启动；删除 Recall/CoreAI 目录时跳过目录联接。补充 `%LOCALAPPDATA%\Temp` 清理项、PowerShell 语法解析与真实长脚本测试，以及 README 命令行文档。
 
 - **v1.9.0**：**新增 Windows 深度优化与净化模块 + 扩展 C 盘清理项**。

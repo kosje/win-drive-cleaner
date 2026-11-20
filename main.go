@@ -10,7 +10,7 @@ import (
 )
 
 // 版本
-const version = "1.9.1"
+const version = "1.9.2"
 
 // 运行参数（由主流程填充）
 var (
@@ -76,7 +76,8 @@ func main() {
 	case *compactFlag:
 		RunCompact(dry)
 	case strings.TrimSpace(*optimizeFlag) != "":
-		RunOptimizeCLI(*optimizeFlag, *pinyinPresetFlag)
+		DryRun = dry
+		RunOptimizeCLI(*optimizeFlag, *pinyinPresetFlag, dry)
 	case deep:
 		DryRun = dry
 		execute(true, noUAC)

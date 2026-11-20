@@ -130,8 +130,7 @@ func parseExecutableFromCommand(cmd string) string {
 // askInt 读取一个非负整数；解析失败时返回 def。
 func askInt(prompt string, def int) int {
 	fmt.Print(prompt)
-	var s string
-	_, _ = fmt.Scanln(&s)
+	s, _ := readInputLine()
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return def
@@ -146,8 +145,7 @@ func askInt(prompt string, def int) int {
 // askYesNo 读取 y/n；默认返回 def（空回车视为默认）。
 func askYesNo(prompt string, def bool) bool {
 	fmt.Print(prompt + " [y/N] ")
-	var s string
-	_, _ = fmt.Scanln(&s)
+	s, _ := readInputLine()
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "" {
 		return def

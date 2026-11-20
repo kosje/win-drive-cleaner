@@ -93,3 +93,16 @@
 发布前使用 amd64/386 Go 测试、Go vet、前端协议测试、完整 Edge GUI 测试与 actionlint 检查。GitHub Actions 的竞态、双架构及浏览器检查全部通过后才推送版本标签，再由自动化发布并核对附件哈希。
 
 可继续改进的范围包括更多软件缓存规则与自定义只读扫描目录；本轮没有扩大未知目录的删除权限，也未执行真实系统清理、DISM 或系统压缩。
+
+
+## v1.9.0–v1.9.2 深度优化与净化模块审查
+
+| 问题及影响 | 修复位置和行为 |
+| --- | --- |
+| 原 `.bat` 脚本中微软拼音 `$pinyin1`/`$pinyin2` 的 Profile GUID 误写为 `{FCEEBE02-...}`，未能匹配 Windows 10/11 实机真实标识 `0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FA550B04-5AD7-411F-A5AC-CA038EC515D7}`，导致 `.Remove()` 落空、还原也写入错误 GUID；仅选方案 2 时若中文语言下无其他键盘，系统会自动重置回微软拼音 | `optimizer.go`：移除时同时匹配真实标识及所有含微软拼音 CLSID/Profile GUID 的条目（保留第三方输入法），兼容 `zh-Hans-CN`/`zh-CN`；方案 2 下若中文语言无剩余输入法则自动兜底 `0804:00000409`；还原时写入真实微软拼音标识 |
+| 恢复 Windows 更新未清除封杀更新写入 `WaaSMedicSvc` 的单字节损坏 `FailureActions`；恢复 22 项 AI 遗漏 `AcceptedPrivacyPolicy`、`ModelDownloadEnabled`、`CanCortanaBeEnabled` 及 `SettingsPageVisibility` 空子键 | `optimizer.go`：恢复更新时检测并移除单字节损坏 `FailureActions`；恢复 AI 时补齐 3 项用户注册表值还原、清理空子键，并仅在服务存在时恢复 AI 服务启动类型 |
+| PowerShell 长脚本直接拼入 `-EncodedCommand` 逼近 Windows 32767 字符命令行上限；子进程共享控制台改动父窗口代码页，且 AppX/DISM 进度输出 CLIXML 杂讯 | `optimizer.go`：使用极短引导命令从 stdin 读取 Base64(UTF-8) 脚本正文，以 `CREATE_NO_WINDOW` 隔离控制台并设置 `$ProgressPreference = 'SilentlyContinue'` |
+| 一键终极精简在之前点过「停止清理」时，第 4 步 C 盘深度清理因残留停止标志而跳过全部清理项；单步失败会中断后续步骤 | `optimizer.go`：`runOptimizerDeepClean` 启动前复位停止标志；单步失败继续执行后续步骤并最终汇总失败项 |
+| `--optimize` 忽略 `--dry-run` 演练参数；非管理员下传入非法参数会先弹出 UAC 提权再报错；CLI 直接调用失败时退出码仍为 0 | `main.go`、`optimizer.go`、`optimizer_cli.go`：支持 `--optimize ... --dry-run` 演练模式；提权前先行校验参数；非交互调用失败返回非零退出码 |
+| 8.3 短路径 `%TEMP%` 与长路径 `%LOCALAPPDATA%\Temp` 指向同一目录但字面字符串不同，演练模式下会重复统计两遍大小 | `engine.go`：`collectItems` 结合 `resolvedPathOrOriginal` 句柄解析后的真实长路径去重 |
+| `askYesNo` / `askInt` 使用 `fmt.Scanln` 在空格处截断，用户输入含行尾空格时残留内容污染下一次 `readInputLine` | `explorer.go`、`optimizer_cli.go`：统一改用 `readInputLine` 按整行读取 |

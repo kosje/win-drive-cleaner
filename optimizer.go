@@ -101,6 +101,23 @@ func normalizePinyinPreset(preset string) (string, error) {
 	return p, nil
 }
 
+// validateOptimizeArgs 在提权或执行前校验 action 与 preset 是否合法。
+func validateOptimizeArgs(action, preset string) (string, string, error) {
+	act := strings.ToLower(strings.TrimSpace(action))
+	if act == OptActionOptimizeAll {
+		p, err := normalizePinyinPreset(preset)
+		if err != nil {
+			return "", "", err
+		}
+		return act, p, nil
+	}
+	if _, _, err := buildOptimizerScript(act, preset); err != nil {
+		return "", "", err
+	}
+	p, _ := normalizePinyinPreset(preset)
+	return act, p, nil
+}
+
 // buildOptimizerScript 根据操作类型生成对应的 PowerShell 脚本（纯函数，便于单测）。
 func buildOptimizerScript(action, preset string) (string, string, error) {
 	const header = `$ErrorActionPreference = 'Continue'
@@ -145,41 +162,56 @@ function Remove-RegItemSafe {
 		body := fmt.Sprintf(`
 Write-Output ">>> 彻底删除微软拼音输入法并实施永久免疫（方案 %s）..."
 $kbChoice = "%s"
-$langList = Get-WinUserLanguageList
-$zhLang = $langList | Where-Object { $_.LanguageTag -eq "zh-Hans-CN" }
-if ($null -eq $zhLang) {
-    $langList.Add("zh-Hans-CN")
-    $zhLang = $langList | Where-Object { $_.LanguageTag -eq "zh-Hans-CN" }
-}
-
-$pinyin1 = "0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FCEEBE02-D534-4D08-896A-770F5681D1B5}"
-$pinyin2 = "0804:{FA550B04-5AD7-411F-A5AC-CA038EC515D7}{FCEEBE02-D534-4D08-896A-770F5681D1B5}"
-$zhLang.InputMethodTips.Remove($pinyin1) | Out-Null
-$zhLang.InputMethodTips.Remove($pinyin2) | Out-Null
-
-if ($kbChoice -eq "1" -or $kbChoice -eq "3") {
-    if (-not ($zhLang.InputMethodTips -contains "0804:00000409")) {
-        $zhLang.InputMethodTips.Add("0804:00000409")
+$langList = Get-WinUserLanguageList -ErrorAction SilentlyContinue
+if ($null -ne $langList) {
+    $zhLang = $langList | Where-Object { $_.LanguageTag -eq "zh-Hans-CN" -or $_.LanguageTag -eq "zh-CN" } | Select-Object -First 1
+    if ($null -eq $zhLang) {
+        $langList.Add("zh-Hans-CN")
+        $zhLang = $langList | Where-Object { $_.LanguageTag -eq "zh-Hans-CN" -or $_.LanguageTag -eq "zh-CN" } | Select-Object -First 1
     }
-    Set-RegString -Path "HKCU:\Keyboard Layout\Substitutes" -Name "00000804" -Value "00000409"
-    Set-RegString -Path "Registry::HKEY_USERS\.DEFAULT\Keyboard Layout\Substitutes" -Name "00000804" -Value "00000409"
-    Write-Output "  -> [√] 已配置并锁定【简体中文 - 美式键盘】(0804:00000409)"
-}
 
-if ($kbChoice -eq "2" -or $kbChoice -eq "3") {
-    $enLang = $langList | Where-Object { $_.LanguageTag -eq "en-US" }
-    if ($null -eq $enLang) {
-        $newEn = New-WinUserLanguageList en-US
-        $langList.Add($newEn[0])
-        $enLang = $langList | Where-Object { $_.LanguageTag -eq "en-US" }
+    $pinyin1 = "0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FCEEBE02-D534-4D08-896A-770F5681D1B5}"
+    $pinyin2 = "0804:{FA550B04-5AD7-411F-A5AC-CA038EC515D7}{FCEEBE02-D534-4D08-896A-770F5681D1B5}"
+    $pinyin3 = "0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FA550B04-5AD7-411F-A5AC-CA038EC515D7}"
+    if ($null -ne $zhLang) {
+        $zhLang.InputMethodTips.Remove($pinyin1) | Out-Null
+        $zhLang.InputMethodTips.Remove($pinyin2) | Out-Null
+        $zhLang.InputMethodTips.Remove($pinyin3) | Out-Null
+        @($zhLang.InputMethodTips) | Where-Object {
+            $_ -like "*81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E*" -or $_ -like "*FA550B04-5AD7-411F-A5AC-CA038EC515D7*"
+        } | ForEach-Object {
+            $zhLang.InputMethodTips.Remove($_) | Out-Null
+        }
     }
-    if (-not ($enLang.InputMethodTips -contains "0409:00000409")) {
-        $enLang.InputMethodTips.Add("0409:00000409")
-    }
-    Write-Output "  -> [√] 已配置并添加【英语(美国) - 普通美式键盘】(0409:00000409)"
-}
 
-Set-WinUserLanguageList $langList -Force
+    if ($kbChoice -eq "1" -or $kbChoice -eq "3") {
+        if ($null -ne $zhLang -and -not ($zhLang.InputMethodTips -contains "0804:00000409")) {
+            $zhLang.InputMethodTips.Add("0804:00000409")
+        }
+        Set-RegString -Path "HKCU:\Keyboard Layout\Substitutes" -Name "00000804" -Value "00000409"
+        Set-RegString -Path "Registry::HKEY_USERS\.DEFAULT\Keyboard Layout\Substitutes" -Name "00000804" -Value "00000409"
+        Write-Output "  -> [√] 已配置并锁定【简体中文 - 美式键盘】(0804:00000409)"
+    }
+
+    if ($kbChoice -eq "2" -or $kbChoice -eq "3") {
+        $enLang = $langList | Where-Object { $_.LanguageTag -eq "en-US" } | Select-Object -First 1
+        if ($null -eq $enLang) {
+            $newEn = New-WinUserLanguageList en-US
+            $langList.Add($newEn[0])
+            $enLang = $langList | Where-Object { $_.LanguageTag -eq "en-US" } | Select-Object -First 1
+        }
+        if ($null -ne $enLang -and -not ($enLang.InputMethodTips -contains "0409:00000409")) {
+            $enLang.InputMethodTips.Add("0409:00000409")
+        }
+        # 若仅选方案 2 且移除微软拼音后中文语言下已无任何输入法，补充 0804:00000409 防止系统自动重置回微软拼音
+        if ($null -ne $zhLang -and $zhLang.InputMethodTips.Count -eq 0) {
+            $zhLang.InputMethodTips.Add("0804:00000409")
+        }
+        Write-Output "  -> [√] 已配置并添加【英语(美国) - 普通美式键盘】(0409:00000409)"
+    }
+
+    Set-WinUserLanguageList $langList -Force -ErrorAction SilentlyContinue
+}
 
 $regProfile = "HKCU:\Control Panel\International\User Profile\zh-Hans-CN"
 if (Test-Path $regProfile) {
@@ -271,7 +303,9 @@ Set-RegDword -Path "HKCU:\Software\Microsoft\Paint" -Name "EnableCocreator" -Val
 Write-Output "  [8/22] 禁用/移除 AI Fabric Service 服务..."
 @("AIFabric", "AIFabricService", "CoreAIService") | ForEach-Object {
     Stop-Service -Name $_ -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$_" -Name "Start" -Value 4 -Type DWord -ErrorAction SilentlyContinue
+    if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\$_") {
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$_" -Name "Start" -Value 4 -Type DWord -ErrorAction SilentlyContinue
+    }
 }
 Set-RegDword -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" -Name "DisableAIFabricService" -Value 1
 
@@ -305,8 +339,8 @@ Set-RegDword -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" -N
 Set-RegDword -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1
 
 Write-Output "  [16/22] 卸载 Copilot 及 AI 相关的 AppX 应用程序包..."
-Get-AppxPackage -AllUsers | Where-Object { $_.Name -match "Copilot|Recall|Windows\.Ai\.|GenerativeAI" } | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -match "Copilot|Recall|Windows\.Ai\.|GenerativeAI" } | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Out-Null
+Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "Copilot|Recall|Windows\.Ai\.|GenerativeAI" } | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match "Copilot|Recall|Windows\.Ai\.|GenerativeAI" } | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Out-Null
 
 Write-Output "  [17/22] 调用 DISM 移除 Recall 可选功能..."
 try {
@@ -315,7 +349,7 @@ try {
 
 Write-Output "  [18/22] 扫描并移除 CBS 中的 AI 组件包..."
 try {
-    Get-WindowsPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.PackageName -like "*Recall*" -or $_.PackageName -like "*Windows-AI*" } | Remove-WindowsPackage -Online -NoRestart -ErrorAction SilentlyContinue | Out-Null
+    Get-WindowsPackage -Online -WarningAction SilentlyContinue -ErrorAction SilentlyContinue | Where-Object { $_.PackageName -like "*Recall*" -or $_.PackageName -like "*Windows-AI*" } | Remove-WindowsPackage -Online -NoRestart -WarningAction SilentlyContinue -ErrorAction SilentlyContinue | Out-Null
 } catch {}
 
 Write-Output "  [19/22] 隐藏 Windows 设置界面中的 AI 组件与 Recall 页面..."
@@ -356,12 +390,18 @@ Write-Output ">>> 正在解除布局代换并恢复微软拼音输入法..."
 Remove-ItemProperty -Path "HKCU:\Keyboard Layout\Substitutes" -Name "00000804" -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path "Registry::HKEY_USERS\.DEFAULT\Keyboard Layout\Substitutes" -Name "00000804" -ErrorAction SilentlyContinue
 
-$lang = Get-WinUserLanguageList
-$zh = $lang | Where-Object { $_.LanguageTag -eq "zh-Hans-CN" }
-$pinyin = "0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FCEEBE02-D534-4D08-896A-770F5681D1B5}"
-if ($zh -and -not ($zh.InputMethodTips -contains $pinyin)) {
-    $zh.InputMethodTips.Add($pinyin)
-    Set-WinUserLanguageList $lang -Force
+$lang = Get-WinUserLanguageList -ErrorAction SilentlyContinue
+if ($null -ne $lang) {
+    $zh = $lang | Where-Object { $_.LanguageTag -eq "zh-Hans-CN" -or $_.LanguageTag -eq "zh-CN" } | Select-Object -First 1
+    if ($null -eq $zh) {
+        $lang.Add("zh-Hans-CN")
+        $zh = $lang | Where-Object { $_.LanguageTag -eq "zh-Hans-CN" -or $_.LanguageTag -eq "zh-CN" } | Select-Object -First 1
+    }
+    $pinyin = "0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FA550B04-5AD7-411F-A5AC-CA038EC515D7}"
+    if ($null -ne $zh -and -not ($zh.InputMethodTips -contains $pinyin)) {
+        $zh.InputMethodTips.Add($pinyin)
+    }
+    Set-WinUserLanguageList $lang -Force -ErrorAction SilentlyContinue
 }
 Enable-ScheduledTask -TaskPath "\Microsoft\Windows\LanguageComponentsInstaller\" -TaskName "Installation" -ErrorAction SilentlyContinue | Out-Null
 Enable-ScheduledTask -TaskPath "\Microsoft\Windows\LanguageComponentsInstaller\" -TaskName "ReconcileLanguageResources" -ErrorAction SilentlyContinue | Out-Null
@@ -378,6 +418,10 @@ Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" -N
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\UsoSvc" -Name "Start" -Value 2 -Type DWord -ErrorAction SilentlyContinue
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bits" -Name "Start" -Value 3 -Type DWord -ErrorAction SilentlyContinue
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\dosvc" -Name "Start" -Value 2 -Type DWord -ErrorAction SilentlyContinue
+$fa = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" -Name "FailureActions" -ErrorAction SilentlyContinue).FailureActions
+if ($null -ne $fa -and $fa.Length -le 1) {
+    Remove-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" -Name "FailureActions" -Force -ErrorAction SilentlyContinue
+}
 Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
 
 $tasks = @(
@@ -417,14 +461,20 @@ Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent
 Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Name "DisableConsumerAccountStateContent"
 Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Speech" -Name "AllowSpeechModelDownload"
 Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\SettingsPageVisibility" -Name "SettingsPageVisibility"
+Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\SettingsPageVisibility"
 
 Set-RegDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "ShowCopilotButton" -Value 1
 Set-RegDword -Path "HKCU:\Software\Microsoft\Input\Settings" -Name "InsightsEnabled" -Value 1
+Set-RegDword -Path "HKCU:\Software\Microsoft\Personalization\Settings" -Name "AcceptedPrivacyPolicy" -Value 1
+Set-RegDword -Path "HKCU:\Software\Microsoft\Speech_OneCore\Preferences" -Name "ModelDownloadEnabled" -Value 1
 Set-RegDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "BingSearchEnabled" -Value 1
+Remove-RegItemSafe -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "CanCortanaBeEnabled"
 Set-RegDword -Path "HKCU:\Software\Microsoft\Paint" -Name "EnableCocreator" -Value 1
 Set-RegDword -Path "HKCU:\Software\Microsoft\Notepad" -Name "EnableCowriter" -Value 1
 @("AIFabric", "AIFabricService", "CoreAIService") | ForEach-Object {
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$_" -Name "Start" -Value 3 -Type DWord -ErrorAction SilentlyContinue
+    if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\$_") {
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$_" -Name "Start" -Value 3 -Type DWord -ErrorAction SilentlyContinue
+    }
 }
 
 try {
@@ -446,21 +496,15 @@ Write-Output "  提示：如需 Copilot 应用，可在微软应用商店 (Micro
 
 // OptimizeExecute 执行深度优化或还原操作（GUI / CLI 共用，不读取 stdin）。
 func OptimizeExecute(action, preset string) (map[string]interface{}, error) {
-	action = strings.ToLower(strings.TrimSpace(action))
-	// 先校验参数，再检查权限：非法输入应得到准确的错误原因
-	if action == OptActionOptimizeAll {
-		if _, err := normalizePinyinPreset(preset); err != nil {
-			return nil, err
-		}
-	} else if _, _, err := buildOptimizerScript(action, preset); err != nil {
+	act, p, err := validateOptimizeArgs(action, preset)
+	if err != nil {
 		return nil, err
 	}
 	if !optimizerAdminCheck() {
 		return nil, errors.New("深度优化与净化需要管理员权限，请以管理员身份运行本工具")
 	}
 
-	if action == OptActionOptimizeAll {
-		p, _ := normalizePinyinPreset(preset)
+	if act == OptActionOptimizeAll {
 		var outParts []string
 		var failures []string
 		steps := []struct {
@@ -510,7 +554,7 @@ func OptimizeExecute(action, preset string) (map[string]interface{}, error) {
 		}, nil
 	}
 
-	script, successMsg, err := buildOptimizerScript(action, preset)
+	script, successMsg, err := buildOptimizerScript(act, p)
 	if err != nil {
 		return nil, err
 	}

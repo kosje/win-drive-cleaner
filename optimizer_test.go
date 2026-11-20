@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -289,5 +291,62 @@ func TestOptimizerScriptsParseInPowerShell(t *testing.T) {
 		if err != nil || out != "PARSE-OK" {
 			t.Errorf("script %q failed to parse: %v\n%s", action, err, out)
 		}
+	}
+}
+
+func TestThumbnailCacheCleansBothThumbAndIconCache(t *testing.T) {
+	isolatedPaths(t)
+	root := filepath.Join(localAppData(), "Microsoft", "Windows", "Explorer")
+	writeTestFile(t, filepath.Join(root, "thumbcache_256.db"), "thumb")
+	writeTestFile(t, filepath.Join(root, "iconcache_32.db"), "icon")
+	writeTestFile(t, filepath.Join(root, "keep.db"), "keep")
+
+	r := cleanItemWithDryRun(CleanItem{Path: root, Mode: ModeThumbnailCache}, false)
+	if r.Deleted != 2 || r.Bytes != 9 || r.Errors != 0 {
+		t.Fatalf("expected both thumbcache and iconcache deleted, got %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(root, "keep.db")); err != nil {
+		t.Fatalf("non-cache file should be preserved: %v", err)
+	}
+}
+
+func TestAskYesNoConsumesFullLineWithTrailingSpaces(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	_, _ = f.WriteString("n   \r\nq\r\n")
+	_, _ = f.Seek(0, 0)
+	oldStdin := os.Stdin
+	os.Stdin = f
+	defer func() { os.Stdin = oldStdin }()
+
+	if askYesNo("confirm?", true) {
+		t.Fatal("expected false for 'n   '")
+	}
+	next, err := readInputLine()
+	if err != nil || next != "q" {
+		t.Fatalf("trailing spaces in askYesNo leaked into next readInputLine: got %q, err=%v", next, err)
+	}
+}
+
+func TestOptimizeCLIDryRunDoesNotRequireAdminOrRunScripts(t *testing.T) {
+	origAdmin, origRunner, origClean := optimizerAdminCheck, optimizerRunner, optimizerDeepClean
+	origInteractive, origNoPause := inInteractive, noPause
+	defer func() {
+		optimizerAdminCheck, optimizerRunner, optimizerDeepClean = origAdmin, origRunner, origClean
+		inInteractive, noPause = origInteractive, origNoPause
+	}()
+	optimizerAdminCheck = func() bool { return false }
+	ran := false
+	optimizerRunner = func(string) (string, error) { ran = true; return "", nil }
+	optimizerDeepClean = func() (int, int, int64, int64) { ran = true; return 0, 0, 0, 0 }
+	inInteractive = true
+	noPause = true
+
+	RunOptimizeCLI(OptActionOptimizeAll, "2", true)
+	if ran {
+		t.Fatal("dry-run must not execute PowerShell scripts or deep clean")
 	}
 }

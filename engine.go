@@ -54,7 +54,7 @@ func ResetCleanCancel() { cleanCancel.Store(false) }
 // standardItems 普通清理：低风险、快速、不影响系统可用性。
 func standardItems() []CleanItem {
 	return []CleanItem{
-		{Name: "Windows 临时文件", Path: systemRoot() + "\\Temp", Mode: ModeClearContents, Deep: false},
+		{Name: "Windows 临时文件", Path: filepath.Join(systemRoot(), "Temp"), Mode: ModeClearContents, Deep: false},
 		{Name: "用户临时文件", Path: userTemp(), Mode: ModeClearContents, Deep: false},
 		{Name: "本地应用临时文件", Path: filepath.Join(localAppData(), "Temp"), Mode: ModeClearContents, Deep: false},
 		{Name: "系统预读(Prefetch)", Path: filepath.Join(systemRoot(), "Prefetch"), Mode: ModeClearContents, Deep: false},
@@ -95,8 +95,9 @@ func collectItems(includeDeep bool) []CleanItem {
 	unique := make([]CleanItem, 0, len(items))
 	for _, item := range items {
 		duplicate := false
+		itemTarget := resolvedPathOrOriginal(item.Path)
 		for _, previous := range unique {
-			if samePath(item.Path, previous.Path) && item.Mode == previous.Mode {
+			if (samePath(item.Path, previous.Path) || samePath(itemTarget, resolvedPathOrOriginal(previous.Path))) && item.Mode == previous.Mode {
 				duplicate = true
 				break
 			}

@@ -859,7 +859,8 @@ function optRun(action, label, confirmMsg, preset){
         out.textContent += (out.textContent?"\n\n":"") + ((r && r.msg) || (label+"完成"));
       }
       toast((r && r.msg) || (label+"完成"));
-      if(action==="all") loadTop();
+      loadTop();
+      loadDisk();
     })
     .catch(function(e){ out.textContent="失败: "+e.message; toast(label+"失败: "+e.message); })
     .finally(function(){

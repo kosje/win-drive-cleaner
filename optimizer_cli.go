@@ -4,12 +4,31 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
 // RunOptimizeCLI 通过命令行参数执行单项深度优化/还原（--optimize）。
-// 非管理员且未禁用 UAC 时自动提权，在新的管理员窗口中执行。
-func RunOptimizeCLI(action, preset string) {
+// 先校验参数，演练模式直接打印说明；非管理员且未禁用 UAC 时自动提权。
+func RunOptimizeCLI(action, preset string, dryRun bool) {
+	act, p, err := validateOptimizeArgs(action, preset)
+	if err != nil {
+		fmt.Println("  错误:", err)
+		if !inInteractive && !noPause {
+			pause()
+		}
+		if !inInteractive {
+			os.Exit(2)
+		}
+		return
+	}
+	if dryRun {
+		fmt.Printf("  [演练模式] 将执行深度优化操作: %s (键盘方案=%s)，未真正修改系统或删除文件。\n", act, p)
+		if !inInteractive && !noPause {
+			pause()
+		}
+		return
+	}
 	if !isAdmin() && !noUAC && !elevated {
 		fmt.Println("  深度优化与净化需要管理员权限，正在请求 UAC 提权…")
 		if err := elevateSelfWithArgs(); err != nil {
@@ -17,20 +36,26 @@ func RunOptimizeCLI(action, preset string) {
 			if !noPause {
 				pause()
 			}
+			if !inInteractive {
+				os.Exit(2)
+			}
 		}
 		return
 	}
-	runOptimizeAndPrint(action, preset)
+	ok := runOptimizeAndPrint(act, p)
 	if !inInteractive && !noPause {
 		pause()
 	}
+	if !inInteractive && !ok {
+		os.Exit(1)
+	}
 }
 
-func runOptimizeAndPrint(action, preset string) {
+func runOptimizeAndPrint(action, preset string) bool {
 	res, err := OptimizeExecute(action, preset)
 	if err != nil {
 		fmt.Println("  错误:", err)
-		return
+		return false
 	}
 	if out, _ := res["output"].(string); out != "" {
 		fmt.Println(out)
@@ -38,22 +63,29 @@ func runOptimizeAndPrint(action, preset string) {
 	if msg, _ := res["msg"].(string); msg != "" {
 		fmt.Println("  " + msg)
 	}
+	ok, _ := res["ok"].(bool)
+	return ok
 }
 
-// runOptimizeFromMenu 交互菜单内执行：已是管理员则就地执行；
+// runOptimizeFromMenu 交互菜单内执行：先校验参数；已是管理员则就地执行；
 // 否则在新的管理员窗口中执行（结束后该窗口会停住等待回车）。
 func runOptimizeFromMenu(action, preset string) {
+	act, p, err := validateOptimizeArgs(action, preset)
+	if err != nil {
+		fmt.Println("  错误:", err)
+		return
+	}
 	if isAdmin() {
-		runOptimizeAndPrint(action, preset)
+		runOptimizeAndPrint(act, p)
 		return
 	}
 	if noUAC {
 		fmt.Println("  错误: 深度优化与净化需要管理员权限（当前使用了 --no-uac）。")
 		return
 	}
-	args := []string{"--optimize", action}
+	args := []string{"--optimize", act}
 	if preset != "" {
-		args = append(args, "--pinyin-preset", preset)
+		args = append(args, "--pinyin-preset", p)
 	}
 	if err := elevateSelfWithArgs(args...); err != nil {
 		fmt.Println("  提权失败:", err)
@@ -82,10 +114,10 @@ func manageOptimize() {
 		fmt.Print("  请输入: ")
 
 		choice, err := readInputLine()
+		choice = strings.ToLower(strings.TrimSpace(choice))
 		if err != nil && choice == "" {
 			return
 		}
-		choice = strings.ToLower(strings.TrimSpace(choice))
 		switch choice {
 		case "1":
 			runOptimizeFromMenu(OptActionPurgePinyin, askPinyinPreset())

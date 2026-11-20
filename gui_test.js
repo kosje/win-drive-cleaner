@@ -182,3 +182,70 @@ for (const [panel, prefix, deletionTask, scanTask] of [
     assert.equal(ui.indicators[panel + 'Busy'], false);
   });
 }
+
+function optimizePanel() {
+  const html = fs.readFileSync(__dirname + '/gui.html', 'utf8');
+  const source = html.slice(html.indexOf('/* ---------------- 深度优化与净化'), html.indexOf('/* ---------------- 清理日志'));
+  const nodes = {};
+  const optButtons = [
+    'btnOptPinyin', 'btnOptUpdate', 'btnOptAI', 'btnOptAll',
+    'btnRestorePinyin', 'btnRestoreUpdate', 'btnRestoreAI',
+  ];
+  function el(id) {
+    if (!nodes[id]) {
+      const node = nodes[id] = { disabled: false, handlers: {}, textContent: '', style: {} };
+      node.addEventListener = (name, cb) => { node.handlers[name] = cb; };
+      node.click = () => { if (!node.disabled && node.handlers.click) node.handlers.click(); };
+    }
+    return nodes[id];
+  }
+  optButtons.forEach(el);
+  const pending = [];
+  let topCalls = 0, diskCalls = 0, busyState = false;
+  const context = vm.createContext({
+    el,
+    api: { apiOptimize(action, preset) { return { action, preset }; } },
+    toast() {},
+    confirm() { return true; },
+    busy(_id, on) { busyState = !!on; },
+    loadTop() { topCalls++; },
+    loadDisk() { diskCalls++; },
+    document: {
+      querySelector(sel) {
+        if (sel === 'input[name=pinyinPreset]:checked') return { value: '2' };
+        return null;
+      },
+      querySelectorAll(sel) {
+        if (sel === '.opt-act') return optButtons.map(el);
+        return [];
+      },
+    },
+    runTask(task, invoke) {
+      const args = invoke();
+      return new Promise((resolve, reject) => { pending.push({ task, args, resolve, reject }); });
+    },
+  });
+  vm.runInContext(source, context);
+  return { nodes, optButtons, pending, getBusy: () => busyState, getTopCalls: () => topCalls, getDiskCalls: () => diskCalls };
+}
+
+test('optimize panel locks all action buttons while running and refreshes disk info on completion', async () => {
+  const ui = optimizePanel();
+  ui.nodes.btnOptAll.click();
+  assert.equal(ui.pending.length, 1);
+  assert.deepEqual(ui.pending[0].args, { action: 'all', preset: '2' });
+  assert.equal(ui.getBusy(), true);
+  for (const id of ui.optButtons) {
+    assert.equal(ui.nodes[id].disabled, true, `${id} must be disabled while optimize is running`);
+  }
+  ui.pending[0].resolve({ ok: true, output: '步骤输出', msg: '一键终极精简已完成' });
+  await tick();
+  assert.equal(ui.getBusy(), false);
+  for (const id of ui.optButtons) {
+    assert.equal(ui.nodes[id].disabled, false, `${id} must be re-enabled after completion`);
+  }
+  assert.match(ui.nodes.optOut.textContent, /步骤输出/);
+  assert.match(ui.nodes.optOut.textContent, /一键终极精简已完成/);
+  assert.equal(ui.getTopCalls(), 1);
+  assert.equal(ui.getDiskCalls(), 1);
+});
