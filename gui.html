@@ -45,6 +45,8 @@
   button.btn.ghost:hover{background:#e0e7ff}
   button.btn:disabled{opacity:.5;cursor:not-allowed}
   button.btn.warn{background:var(--warn)}
+  button.btn.ok{background:var(--ok)}
+  button.btn.ok:hover{background:#15803d}
   button.btn.sm{padding:5px 10px;font-size:12px}
   label.chk{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
   table{width:100%;border-collapse:collapse;font-size:13px}
@@ -94,6 +96,7 @@
     <h1>Win 盘清理</h1>
     <div class="nav" id="nav">
       <button data-sec="clean" class="on">磁盘清理</button>
+      <button data-sec="optimize">深度优化与净化</button>
       <button data-sec="startup">开机自启管理</button>
       <button data-sec="big">大文件检测</button>
       <button data-sec="cache">软件缓存</button>
@@ -139,6 +142,48 @@
           <h2>清理结果</h2>
           <div class="kpi" id="cleanKpi"></div>
           <p class="hint" id="cleanNote"></p>
+        </div>
+      </section>
+
+      <section class="sec" id="sec-optimize">
+        <div class="card">
+          <h2>Windows 深度优化与净化（需管理员）</h2>
+          <p class="hint">集成微软拼音彻底删除与永久免疫、彻底封杀 Windows 系统更新、对标 RemoveWindowsAI 22 项 AI 特性全剔除，以及一键终极精简与分类还原。</p>
+          <div class="warnbox" id="optNote" style="display:none"></div>
+        </div>
+        <div class="card">
+          <h2>1. 彻底删除微软拼音输入法 + 永久免疫</h2>
+          <p class="hint">移除微软拼音并阻断账户语言同步与后台自动重装，同时保留所选美式键盘，避免无法输入英文。</p>
+          <div class="row" style="margin-bottom:10px">
+            <label class="chk"><input type="radio" name="pinyinPreset" value="1" checked> 保留【简体中文 - 美式键盘】(0804:00000409 · 推荐)</label>
+            <label class="chk"><input type="radio" name="pinyinPreset" value="2"> 保留/添加【英语(美国) - 美式键盘】(en-US)</label>
+            <label class="chk"><input type="radio" name="pinyinPreset" value="3"> 两者同时配置（双重保障）</label>
+          </div>
+          <div class="row">
+            <button class="btn opt-act" id="btnOptPinyin">删除微软拼音并永久免疫</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>2. 系统更新封杀、Windows AI 彻底剔除与一键精简</h2>
+          <p class="hint">封杀系统更新将停用 wuauserv / WaaSMedicSvc / UsoSvc / bits / dosvc 并写入组策略；删除 AI 覆盖 Copilot、Recall、AI Fabric、画图/记事本 AI、Edge 侧边栏等全部 22 项。</p>
+          <div class="row">
+            <button class="btn opt-act" id="btnOptUpdate">彻底封杀 Windows 更新</button>
+            <button class="btn opt-act" id="btnOptAI">彻底删除 Windows AI (22项)</button>
+            <button class="btn ok opt-act" id="btnOptAll">一键终极精简（拼音 + 更新 + AI + C盘深度清理）</button>
+            <span class="busy" id="optBusy"><span class="spin"></span><span class="busy-txt" id="optBusyTxt">执行中…</span></span>
+          </div>
+        </div>
+        <div class="card">
+          <h2>3. 还原与重新启用中心（全面解除屏蔽）</h2>
+          <p class="hint">所有策略、服务、计划任务与键盘代换均可在此分类一键恢复，恢复后建议注销或重启生效。</p>
+          <div class="row">
+            <button class="btn ghost opt-act" id="btnRestorePinyin">恢复微软拼音输入法</button>
+            <button class="btn ghost opt-act" id="btnRestoreUpdate">恢复 Windows 系统更新</button>
+            <button class="btn ghost opt-act" id="btnRestoreAI">恢复 22 项 Windows AI 支持</button>
+          </div>
+          <div class="card" style="margin:12px 0 0;background:#0f172a;color:#d1fae5;border:0;
+               font:12.5px/1.6 ui-monospace,Consolas,monospace;border-radius:10px;padding:12px;
+               height:220px;overflow:auto;white-space:pre-wrap;display:none" id="optOut"></div>
         </div>
       </section>
 
@@ -379,7 +424,7 @@ function initScanStops(){
 }
 
 /* ---------------- 导航 ---------------- */
-var titles={clean:"磁盘清理",startup:"开机自启管理",big:"大文件检测",cache:"软件缓存",
+var titles={clean:"磁盘清理",optimize:"深度优化与净化",startup:"开机自启管理",big:"大文件检测",cache:"软件缓存",
   comms:"通讯缓存",media:"视频媒体",tools:"系统工具",log:"清理日志",disk:"磁盘信息"};
 el("nav").addEventListener("click",function(e){
   var b=e.target.closest("button"); if(!b) return;
@@ -403,15 +448,23 @@ async function loadTop(){
     el("diskBadge").textContent=(d.systemDrive||"系统盘")+" 剩余 "+fmt(d.free);
     el("btnElevate").style.display = d.admin ? "none" : "";
     var note = el("toolsNote");
+    var optNote = el("optNote");
     if(!d.admin){
       note.style.display="";
       note.innerHTML="当前为普通用户：<b>深度清理 / DISM / 系统盘压缩</b> 将无法完整执行，"+
         "且 HKLM 开机自启项不可修改。点右上角「提权重启」以管理员身份重新打开本工具。";
-    }else if(!d.compactable){
-      note.style.display="";
-      note.innerHTML="当前环境未检测到 <b>CompactOS 系统压缩支持</b>，该功能会自动跳过。";
+      if(optNote){
+        optNote.style.display="";
+        optNote.innerHTML="当前为普通用户：<b>深度优化与净化 / 还原中心</b> 需要管理员权限。点右上角「提权重启」以管理员身份重新打开本工具。";
+      }
     }else{
-      note.style.display="none";
+      if(optNote) optNote.style.display="none";
+      if(!d.compactable){
+        note.style.display="";
+        note.innerHTML="当前环境未检测到 <b>CompactOS 系统压缩支持</b>，该功能会自动跳过。";
+      }else{
+        note.style.display="none";
+      }
     }
   }catch(e){ el("adminBadge").textContent="权限检测失败"; }
 }
@@ -783,6 +836,59 @@ el("btnDism").addEventListener("click",function(){
 el("btnCompact").addEventListener("click",function(){
   if(!confirm("执行系统盘 compact LZX 压缩？过程较长且占用 CPU，勿强制断电。")) return;
   toolRun("compact","系统盘压缩", function(){ return api.apiCompact(); });
+});
+
+/* ---------------- 深度优化与净化 ---------------- */
+function selectedPinyinPreset(){
+  var checked=document.querySelector('input[name=pinyinPreset]:checked');
+  return checked ? checked.value : "1";
+}
+function setOptButtonsDisabled(disabled){
+  Array.prototype.forEach.call(document.querySelectorAll('.opt-act'),function(b){ b.disabled=!!disabled; });
+}
+function optRun(action, label, confirmMsg, preset){
+  if(confirmMsg && !confirm(confirmMsg)) return;
+  setOptButtonsDisabled(true);
+  busy("optBusy",true); el("optBusyTxt").textContent=label+" 执行中…";
+  var out=el("optOut"); out.style.display=""; out.textContent="正在执行 "+label+"，请稍候…";
+  runTask("optimize", function(){ return api.apiOptimize(action, preset || ""); })
+    .then(function(r){
+      if(typeof r==="string"){ out.textContent=r; }
+      else{
+        out.textContent = (r && r.output) ? r.output : "";
+        out.textContent += (out.textContent?"\n\n":"") + ((r && r.msg) || (label+"完成"));
+      }
+      toast((r && r.msg) || (label+"完成"));
+      if(action==="all") loadTop();
+    })
+    .catch(function(e){ out.textContent="失败: "+e.message; toast(label+"失败: "+e.message); })
+    .finally(function(){
+      setOptButtonsDisabled(false);
+      busy("optBusy",false);
+    });
+}
+el("btnOptPinyin").addEventListener("click",function(){
+  var p=selectedPinyinPreset();
+  optRun("pinyin","删除微软拼音并免疫","确定彻底删除微软拼音输入法并应用所选美式键盘方案 ("+p+")？",p);
+});
+el("btnOptUpdate").addEventListener("click",function(){
+  optRun("block-update","封杀 Windows 系统更新","确定彻底封杀 Windows 系统更新？可随时在下方还原中心恢复。","");
+});
+el("btnOptAI").addEventListener("click",function(){
+  optRun("remove-ai","删除 22 项 Windows AI","确定彻底删除 22 项 Windows AI 特性（Copilot / Recall / AI Fabric 等）？耗时约数十秒，可随时还原。","");
+});
+el("btnOptAll").addEventListener("click",function(){
+  var p=selectedPinyinPreset();
+  optRun("all","一键终极精简","将按序执行：微软拼音免疫(方案 "+p+") + 封杀系统更新 + 删除 22 项 Windows AI + 深度清理 C 盘垃圾。确定继续？",p);
+});
+el("btnRestorePinyin").addEventListener("click",function(){
+  optRun("restore-pinyin","恢复微软拼音","确定恢复微软拼音输入法与语言同步？","");
+});
+el("btnRestoreUpdate").addEventListener("click",function(){
+  optRun("restore-update","恢复 Windows 系统更新","确定恢复 Windows 系统更新服务、策略与计划任务？","");
+});
+el("btnRestoreAI").addEventListener("click",function(){
+  optRun("restore-ai","恢复 Windows AI 支持","确定解除 22 项 Windows AI 策略屏蔽并重新启用 Recall 与计划任务？","");
 });
 
 /* ---------------- 清理日志 ---------------- */

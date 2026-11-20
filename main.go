@@ -10,7 +10,7 @@ import (
 )
 
 // 版本
-const version = "1.8.2"
+const version = "1.9.0"
 
 // 运行参数（由主流程填充）
 var (
@@ -35,6 +35,8 @@ func main() {
 	scanStartup := flag.Bool("scan-startup", false, "只读列出全部开机自启动项(注册表 Run/RunOnce + 启动文件夹)")
 	manageStartupFlag := flag.Bool("manage-startup", false, "交互管理开机自启动项(可逆禁用/启用)")
 	compactFlag := flag.Bool("compact", false, "执行系统盘压缩(compact /CompactOS:always, 需管理员, Win10/11)")
+	optimizeFlag := flag.String("optimize", "", "执行深度优化或还原(pinyin|block-update|remove-ai|all|restore-pinyin|restore-update|restore-ai)")
+	pinyinPresetFlag := flag.String("pinyin-preset", "1", "微软拼音免疫后保留的美式键盘方案(1=中文美式, 2=英文美式, 3=双重配置)")
 	autoFlag := flag.Bool("auto", false, "自动模式：倒计时后按上次设置执行（由登录自启调用，回车可取消）")
 	guiFlag := flag.Bool("gui", false, "启动图形界面(GUI, 需 Win10/11 自带 WebView2)")
 	showHelp := flag.Bool("h", false, "显示帮助")
@@ -73,6 +75,8 @@ func main() {
 		}
 	case *compactFlag:
 		RunCompact(dry)
+	case strings.TrimSpace(*optimizeFlag) != "":
+		RunOptimizeCLI(*optimizeFlag, *pinyinPresetFlag)
 	case deep:
 		DryRun = dry
 		execute(true, noUAC)
@@ -225,6 +229,7 @@ func interactive(skipUAC bool) {
 		fmt.Println("  11) 系统盘压缩(compact LZX, 需管理员, Win10/11)")
 		fmt.Println("  12) 开机自启动管理(可逆禁用/启用 Run 项与启动文件夹)")
 		fmt.Println("  13) 图形界面 GUI(需 Win10/11 自带 WebView2)")
+		fmt.Println("  14) 深度优化与净化(微软拼音免疫/封杀更新/删除22项AI/一键精简与还原)")
 		fmt.Println("   q) 退出")
 		fmt.Print("  请输入: ")
 
@@ -266,6 +271,8 @@ func interactive(skipUAC bool) {
 			manageStartup()
 		case "13":
 			runGUI()
+		case "14":
+			manageOptimize()
 		case "q", "exit", "quit":
 			fmt.Println("  已退出。")
 			return
@@ -365,6 +372,8 @@ func printHelp() {
 	fmt.Println("  --scan-startup        只读列出全部开机自启动项(注册表 Run/RunOnce + 启动文件夹)")
 	fmt.Println("  --manage-startup      交互管理开机自启动项(可逆禁用/启用, 非本工具自启)")
 	fmt.Println("  --compact             执行系统盘压缩(compact LZX, 需管理员, Win10/11)")
+	fmt.Println("  --optimize <action>   执行深度优化或还原(pinyin|block-update|remove-ai|all|restore-pinyin|restore-update|restore-ai)")
+	fmt.Println("  --pinyin-preset <1-3> 微软拼音免疫后保留的美式键盘方案(默认 1)")
 	fmt.Println("  --gui                 启动图形界面(需 Win10/11 自带 WebView2)")
 	fmt.Println("  --auto                自动模式: 倒计时后按上次设置执行(本工具登录自启调用)")
 	fmt.Println("  --version             打印版本")
@@ -379,6 +388,7 @@ func printHelp() {
 	fmt.Println("  11) 系统盘压缩: compact LZX 就地压缩 C:\\Windows, 释放 1-3GB (Win10/11, 可逆)")
 	fmt.Println("  12) 开机自启动管理: 可逆禁用/启用 注册表 Run/RunOnce 与启动文件夹(非本工具自启)")
 	fmt.Println("  13) 图形界面 GUI: 需 Win10/11 自带 WebView2")
+	fmt.Println("  14) 深度优化与净化: 微软拼音免疫、封杀系统更新、删除 22 项 Windows AI、一键终极精简与还原")
 	fmt.Println()
 	fmt.Println("说明: 每次清理结束后默认停在“按回车键退出”，方便看清结果；")
 	fmt.Println("      脚本自动化时加 --no-pause 可自动结束。")

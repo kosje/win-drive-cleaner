@@ -57,9 +57,14 @@ func standardItems() []CleanItem {
 		{Name: "Windows 临时文件", Path: systemRoot() + "\\Temp", Mode: ModeClearContents, Deep: false},
 		{Name: "用户临时文件", Path: userTemp(), Mode: ModeClearContents, Deep: false},
 		{Name: "系统预读(Prefetch)", Path: filepath.Join(systemRoot(), "Prefetch"), Mode: ModeClearContents, Deep: false},
-		{Name: "缩略图缓存", Path: filepath.Join(localAppData(), "Microsoft", "Windows", "Explorer"), Mode: ModeThumbnailCache, Deep: false},
+		{Name: "缩略图与图标缓存", Path: filepath.Join(localAppData(), "Microsoft", "Windows", "Explorer"), Mode: ModeThumbnailCache, Deep: false},
 		{Name: "Windows 更新下载缓存", Path: filepath.Join(systemRoot(), "SoftwareDistribution", "Download"), Mode: ModeClearContents, Deep: false},
 		{Name: "应用崩溃报告(WER)", Path: filepath.Join(allUsersProfile(), "Microsoft", "Windows", "WER"), Mode: ModeClearContents, Deep: false},
+		{Name: "用户崩溃报告(WER)", Path: filepath.Join(localAppData(), "Microsoft", "Windows", "WER"), Mode: ModeClearContents, Deep: false},
+		{Name: "应用崩溃转储(CrashDumps)", Path: filepath.Join(localAppData(), "CrashDumps"), Mode: ModeClearContents, Deep: false},
+		{Name: "DirectX 着色器缓存", Path: filepath.Join(localAppData(), "D3DSCache"), Mode: ModeClearContents, Deep: false},
+		{Name: "NVIDIA 着色器缓存", Path: filepath.Join(localAppData(), "NVIDIA", "DXCache"), Mode: ModeClearContents, Deep: false},
+		{Name: "AMD 着色器缓存", Path: filepath.Join(localAppData(), "AMD", "DxCache"), Mode: ModeClearContents, Deep: false},
 	}
 }
 
@@ -69,6 +74,13 @@ func deepItems() []CleanItem {
 		{Name: "回收站(系统盘)", Path: recycleBin(), Mode: ModeDeleteTree, Deep: true},
 		{Name: "系统盘根目录临时", Path: filepath.Join(systemDrive(), "Temp"), Mode: ModeClearContents, Deep: true},
 		{Name: "旧系统备份(Windows.old)", Path: windowsOld(), Mode: ModeDeleteTree, Deep: true},
+		{Name: "传递优化缓存", Path: filepath.Join(systemRoot(), "ServiceProfiles", "NetworkService", "AppData", "Local", "Microsoft", "Windows", "DeliveryOptimization", "Cache"), Mode: ModeClearContents, Deep: true},
+		{Name: "系统崩溃转储(Minidump)", Path: filepath.Join(systemRoot(), "Minidump"), Mode: ModeClearContents, Deep: true},
+		{Name: "内核内存转储(MEMORY.DMP)", Path: filepath.Join(systemRoot(), "MEMORY.DMP"), Mode: ModeFileDelete, Deep: true},
+		{Name: "CBS 系统日志", Path: filepath.Join(systemRoot(), "Logs", "CBS"), Mode: ModeClearContents, Deep: true},
+		{Name: "DISM 诊断日志", Path: filepath.Join(systemRoot(), "Logs", "DISM"), Mode: ModeClearContents, Deep: true},
+		{Name: "DPX 系统日志", Path: filepath.Join(systemRoot(), "Logs", "DPX"), Mode: ModeClearContents, Deep: true},
+		{Name: "Windows 安装日志(Panther)", Path: filepath.Join(systemRoot(), "Panther"), Mode: ModeClearContents, Deep: true},
 	}
 	return cats
 }
@@ -138,8 +150,9 @@ func cleanItemWithDryRun(it CleanItem, dry bool) *Result {
 				break
 			}
 			for _, entry := range entries {
-				matched, _ := filepath.Match("thumbcache_*.db", entry.Name())
-				if matched && !entry.IsDir() {
+				thumb, _ := filepath.Match("thumbcache_*.db", entry.Name())
+				icon, _ := filepath.Match("iconcache_*.db", entry.Name())
+				if (thumb || icon) && !entry.IsDir() {
 					res.deleteTree(filepath.Join(it.Path, entry.Name()))
 				}
 			}

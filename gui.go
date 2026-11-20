@@ -85,7 +85,7 @@ func (a *guiApp) startAsync(task string, scanning bool, job func(*scanControl) (
 	if a.running == nil {
 		a.running = make(map[string]bool)
 	}
-	mutating := task == "clean" || task == "cacheDelete" || task == "bigfilesDelete" || task == "dism" || task == "compact" || task == "startupToggle"
+	mutating := task == "clean" || task == "cacheDelete" || task == "bigfilesDelete" || task == "dism" || task == "compact" || task == "startupToggle" || task == "optimize"
 	if a.closed.Load() || a.running[task] || (mutating && a.running["mutation"]) {
 		a.mu.Unlock()
 		return nil, fmt.Errorf("操作正在执行或窗口已关闭，请稍后重试")
@@ -275,6 +275,13 @@ func runGUIWithOptions(deep, dry bool) bool {
 	_ = w.Bind("apiCompact", func() (map[string]interface{}, error) {
 		return app.async("compact", func() (interface{}, error) {
 			return CompactExecute(false)
+		})
+	})
+
+	// Windows 深度优化与净化（拼音免疫 / 封杀更新 / 22 项 AI 剔除 / 一键终极精简 / 分类还原）
+	_ = w.Bind("apiOptimize", func(action, preset string) (map[string]interface{}, error) {
+		return app.async("optimize", func() (interface{}, error) {
+			return OptimizeExecute(action, preset)
 		})
 	})
 
