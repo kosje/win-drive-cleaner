@@ -27,6 +27,8 @@ CLI 可直接运行；GUI 需要 WebView2 Runtime，缺失时自动回退到 CLI
 
 ## 更新日志
 
+- **v1.9.3**：**最终轮代码审查修复（SCM 服务立即生效 & 设置页隐藏策略补全）**。封杀与恢复 Windows 更新时同步调用 `Set-Service` 通知服务控制管理器（SCM），解决仅改注册表 `Start` 后未重启即执行 `Start-Service wuauserv` 失败的问题；删除 22 项 AI 隐藏设置页时同步写入 Windows 官方组策略路径 `Policies\Explorer\SettingsPageVisibility`（不覆盖用户已有自定义策略，还原时仅清理本工具写入值）。
+
 - **v1.9.2**：**深度代码审查与修复（第二轮）**。
   - **修复微软拼音在 Windows 10/11 实机上 GUID 不匹配导致无法真正移除/恢复的问题**：原 `.bat` 脚本中 `$pinyin1`/`$pinyin2` 均误拼了后半段 GUID，未能命中 Windows 10/11 实机 `Get-WinUserLanguageList` 中的真实微软拼音标识 `0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FA550B04-5AD7-411F-A5AC-CA038EC515D7}`；现同时按精确标识与 CLSID/Profile GUID 通配清理（保留第三方输入法），兼容 `zh-Hans-CN`/`zh-CN`，并在仅选方案 2 且中文语言下无其他键盘时自动兜底保留 `0804:00000409` 以防系统自动重置回微软拼音；还原时恢复真实微软拼音 GUID。
   - **补齐还原中心遗漏项**：恢复 Windows 更新时自动检测并清除 `WaaSMedicSvc` 的单字节损坏 `FailureActions` 值；恢复 22 项 Windows AI 时补齐 `AcceptedPrivacyPolicy`、`ModelDownloadEnabled`、`CanCortanaBeEnabled` 与 `SettingsPageVisibility` 空子键清理，并仅在对应服务存在时恢复 AI 服务启动类型。

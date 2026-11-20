@@ -237,7 +237,10 @@ Write-Output ">>> [1/3] 停止并锁定 Windows Update 与修复核心服务..."
 $services = @("wuauserv", "WaaSMedicSvc", "UsoSvc", "bits", "dosvc")
 foreach ($svc in $services) {
     Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$svc" -Name "Start" -Value 4 -Type DWord -ErrorAction SilentlyContinue
+    Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+    if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\$svc") {
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$svc" -Name "Start" -Value 4 -Type DWord -ErrorAction SilentlyContinue
+    }
 }
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" -Name "FailureActions" -Value ([byte[]]@(0)) -ErrorAction SilentlyContinue
 Write-Output "  -> 服务已全部禁用，WaaSMedic 自愈更新机制已被破坏！"
@@ -356,6 +359,11 @@ Write-Output "  [19/22] 隐藏 Windows 设置界面中的 AI 组件与 Recall �
 $ctrlPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\SettingsPageVisibility"
 if (!(Test-Path $ctrlPath)) { New-Item -Path $ctrlPath -Force -ErrorAction SilentlyContinue | Out-Null }
 Set-ItemProperty -Path $ctrlPath -Name "SettingsPageVisibility" -Value "hide:ai-components;recall;copilot" -Type String -Force -ErrorAction SilentlyContinue
+$expPolPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+$existingVis = (Get-ItemProperty -Path $expPolPath -Name "SettingsPageVisibility" -ErrorAction SilentlyContinue).SettingsPageVisibility
+if ([string]::IsNullOrWhiteSpace($existingVis)) {
+    Set-RegString -Path $expPolPath -Name "SettingsPageVisibility" -Value "hide:ai-components;recall;copilot"
+}
 
 Write-Output "  [20/22] 删除 Recall 快照文件与本地 CoreAI 模型缓存..."
 $aiFolders = @(
@@ -413,6 +421,11 @@ Write-Output "  [√] 微软拼音已恢复！建议注销或重启生效。"
 	case OptActionRestoreUpdate:
 		body := `
 Write-Output ">>> 正在恢复 Windows 系统更新服务、策略与计划任务..."
+Set-Service -Name "wuauserv" -StartupType Manual -ErrorAction SilentlyContinue
+Set-Service -Name "WaaSMedicSvc" -StartupType Manual -ErrorAction SilentlyContinue
+Set-Service -Name "UsoSvc" -StartupType Automatic -ErrorAction SilentlyContinue
+Set-Service -Name "bits" -StartupType Manual -ErrorAction SilentlyContinue
+Set-Service -Name "dosvc" -StartupType Automatic -ErrorAction SilentlyContinue
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\wuauserv" -Name "Start" -Value 3 -Type DWord -ErrorAction SilentlyContinue
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" -Name "Start" -Value 3 -Type DWord -ErrorAction SilentlyContinue
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\UsoSvc" -Name "Start" -Value 2 -Type DWord -ErrorAction SilentlyContinue
@@ -462,6 +475,11 @@ Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent
 Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Speech" -Name "AllowSpeechModelDownload"
 Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\SettingsPageVisibility" -Name "SettingsPageVisibility"
 Remove-RegItemSafe -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\SettingsPageVisibility"
+$expPolPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+$existingVis = (Get-ItemProperty -Path $expPolPath -Name "SettingsPageVisibility" -ErrorAction SilentlyContinue).SettingsPageVisibility
+if ($existingVis -eq "hide:ai-components;recall;copilot") {
+    Remove-RegItemSafe -Path $expPolPath -Name "SettingsPageVisibility"
+}
 
 Set-RegDword -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "ShowCopilotButton" -Value 1
 Set-RegDword -Path "HKCU:\Software\Microsoft\Input\Settings" -Name "InsightsEnabled" -Value 1

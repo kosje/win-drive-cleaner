@@ -95,7 +95,7 @@
 可继续改进的范围包括更多软件缓存规则与自定义只读扫描目录；本轮没有扩大未知目录的删除权限，也未执行真实系统清理、DISM 或系统压缩。
 
 
-## v1.9.0–v1.9.2 深度优化与净化模块审查
+## v1.9.0–v1.9.3 深度优化与净化模块审查
 
 | 问题及影响 | 修复位置和行为 |
 | --- | --- |
@@ -106,3 +106,4 @@
 | `--optimize` 忽略 `--dry-run` 演练参数；非管理员下传入非法参数会先弹出 UAC 提权再报错；CLI 直接调用失败时退出码仍为 0 | `main.go`、`optimizer.go`、`optimizer_cli.go`：支持 `--optimize ... --dry-run` 演练模式；提权前先行校验参数；非交互调用失败返回非零退出码 |
 | 8.3 短路径 `%TEMP%` 与长路径 `%LOCALAPPDATA%\Temp` 指向同一目录但字面字符串不同，演练模式下会重复统计两遍大小 | `engine.go`：`collectItems` 结合 `resolvedPathOrOriginal` 句柄解析后的真实长路径去重 |
 | `askYesNo` / `askInt` 使用 `fmt.Scanln` 在空格处截断，用户输入含行尾空格时残留内容污染下一次 `readInputLine` | `explorer.go`、`optimizer_cli.go`：统一改用 `readInputLine` 按整行读取 |
+| 封杀/恢复 Windows 更新仅写注册表 `Start`，服务控制管理器（SCM）重启前未刷新缓存，导致不重启直接恢复时 `Start-Service wuauserv` 失败；隐藏设置页仅写 `Control Panel\SettingsPageVisibility` 而未写 Windows 官方组策略路径 `Policies\Explorer\SettingsPageVisibility` | `optimizer.go`：封杀/恢复更新同步调用 `Set-Service` 立即更新 SCM 状态；隐藏 AI 设置页同步写入 `Policies\Explorer\SettingsPageVisibility`（仅在为空时写入，还原时仅在匹配本工具写入值时移除，避免覆盖用户原有策略） |
